@@ -1,0 +1,130 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# =========================
+# Virtual Environment
+# =========================
+.venv/
+venv/
+env/
+ENV/
+
+# =========================
+# Environment Variables / Secrets
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# IDE / Editors
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =========================
+# OS Generated Files
+# =========================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =========================
+# Python Packaging
+# =========================
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+pip-wheel-metadata/
+
+# =========================
+# Testing / Coverage
+# =========================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# =========================
+# FastAPI / Uvicorn
+# =========================
+*.log
+
+# =========================
+# Jupyter Notebook
+# =========================
+.ipynb_checkpoints/
+
+# =========================
+# RAG / Vector Database
+# =========================
+chroma_db/
+chroma/
+*.chroma
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# =========================
+# Extracted PDF Images
+# =========================
+app/extracted_images/
+extracted_images/
+
+# =========================
+# Uploaded Documents
+# =========================
+uploads/
+uploaded_files/
+documents/
+
+# Ignore PDFs / Excel files if they are user-uploaded data
+*.pdf
+*.xlsx
+*.xls
+
+# =========================
+# ML / Model Files
+# =========================
+models/
+*.bin
+*.pt
+*.pth
+*.safetensors
+
+# =========================
+# Temporary Files
+# =========================
+tmp/
+temp/
+*.tmp
+*.temp
+
+# =========================
+# Streamlit
+# =========================
+.streamlit/secrets.toml
+
+# =========================
+# Ruff / Mypy
+# =========================
+.mypy_cache/
+.ruff_cache/
+
+# =========================
+# Environment / Local Config
+# =========================
+*.local

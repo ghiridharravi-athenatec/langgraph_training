@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(\"./.venv/Scripts/python.exe\" -c \"import uvicorn; print\\('uvicorn ok'\\)\")",
+      "Bash(\"./.venv/Scripts/python.exe\" -m uvicorn app.main:app --host 127.0.0.1 --port 8000)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://127.0.0.1:8000/)",
+      "Bash(curl *)",
+      "PowerShell(Get-Process *)",
+      "PowerShell(Get-NetTCPConnection *)",
+      "Bash(netstat -ano)",
+      "PowerShell(Get-CimInstance *)",
+      "Bash(\"./.venv/Scripts/python.exe\" -c \"import pydantic; print\\(pydantic.VERSION\\)\")",
+      "Bash(\"./.venv/Scripts/python.exe\" -c \"import langgraph; print\\(langgraph.__version__ if hasattr\\(langgraph,'__version__'\\) else 'n/a'\\)\")",
+      "Bash(\"./.venv/Scripts/python.exe\" -c \"from langgraph.graph import StateGraph; import inspect; print\\(inspect.signature\\(StateGraph.add_conditional_edges\\)\\)\")",
+      "Bash(./.venv/Scripts/python.exe -c ' *)",
+      "Bash(pip install *)",
+      "Bash(pip show *)",
+      "Bash(python -m spacy download en_core_web_lg)",
+      "Bash(python -c ' *)",
+      "Bash(python *)"
+    ]
+  }
+}
