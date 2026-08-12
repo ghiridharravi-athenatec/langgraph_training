@@ -37,12 +37,12 @@ def test_llm_invoke_result_has_no_circular_reference(monkeypatch):
 
 
 def test_classify_intent_result_has_no_circular_reference(monkeypatch):
-    fake = _fake_response('{"intent": "warranty", "confidence": 0.95, "is_prompt_injection": false, "injection_reason": ""}')
+    fake = _fake_response('{"intent": "question", "confidence": 0.95, "is_prompt_injection": false, "injection_reason": ""}')
     classifier = IntentClassifier(api_key="test-key")
     monkeypatch.setattr(classifier.client.models, "generate_content", lambda **kwargs: fake)
 
-    result = classifier.classify_intent("what is my warranty period")
+    result = classifier.classify_intent("what is the warranty period on this product")
 
     json.dumps(result, default=str)
-    assert result["intent"] == "warranty"
+    assert result["intent"] == "question"
     assert len(result["guardrail_events"]) == 3

@@ -1,0 +1,50 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./logs:/app/logs
+      - ./app/uploads:/app/app/uploads
+      - ./app/extracted_images:/app/app/extracted_images
+      - hf_cache:/root/.cache/huggingface
+      - paddle_cache:/root/.paddleocr
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # Secondary/prototype UI. Off by default — run with:
+  #   docker compose --profile streamlit up
+  streamlit:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["streamlit", "run", "streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+    env_file: .env
+    environment:
+      API_BASE_URL: http://backend:8000/api/v1
+    ports:
+      - "8501:8501"
+    depends_on:
+      - backend
+    volumes:
+      - hf_cache:/root/.cache/huggingface
+    profiles: ["streamlit"]
+    restart: unless-stopped
+
+volumes:
+  # Cached model weights (BGE-M3 embeddings, cross-encoder, PaddleOCR) so they
+  # download once instead of on every container recreate.
+  hf_cache:
+  paddle_cache:

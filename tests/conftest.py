@@ -12,9 +12,22 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.utils.mongo as mongo_module
+from app.core import guardrail_config
+from app.utils.mongo import create_document_record
 
 ADMIN_EMAIL = os.environ["ADMIN_EMAIL"]
 ADMIN_PASSWORD = os.environ["ADMIN_PASSWORD"]
+
+
+@pytest.fixture(autouse=True)
+def _reset_guardrail_config_cache():
+    '''guardrail_config._cache is a module-level, in-process dict (see its docstring
+    for why) - reset it before every test so one test's admin-edit doesn't leak into
+    a later test that calls a guardrail function directly, without the `client`
+    fixture's fresh-Mongo-and-lifespan reset.'''
+    guardrail_config._cache = dict(guardrail_config.DEFAULTS)
+    yield
+    guardrail_config._cache = dict(guardrail_config.DEFAULTS)
 
 
 @pytest.fixture
@@ -64,3 +77,22 @@ def user_headers(user_signup):
 @pytest.fixture
 def user_id(user_signup):
     return user_signup["user"]["id"]
+
+
+@pytest.fixture
+def admin_id(client, admin_headers):
+    return client.get("/api/v1/auth/me", headers=admin_headers).json()["id"]
+
+
+def seed_document(user_id: str, filename: str = "doc.pdf") -> dict:
+    '''Minimal document record so a user passes the "has ingested something" chat
+    guardrail in tests that need /chat to actually proceed - without running the
+    real ingestion pipeline (embeddings, Atlas, OCR).'''
+    return create_document_record(
+        user_id=user_id,
+        filename=filename,
+        content_type="pdf",
+        size_bytes=100,
+        extracted_text="sample content",
+        chunk_count=1,
+    )

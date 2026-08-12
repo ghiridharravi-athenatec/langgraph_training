@@ -13,25 +13,45 @@ logger = get_logger(__name__)
 # Magic-byte sniff instead of trusting the filename extension / browser-supplied
 # content-type - a renamed executable or malformed archive would otherwise sail
 # straight through. Deliberately not using python-magic (needs a libmagic
-# system binary, painful on Windows) since we only need to recognize the two
-# formats this app actually accepts.
+# system binary, painful on Windows) - the small fixed set of formats this app
+# accepts is cheap to recognize by a plain byte-prefix check instead.
+#
+# .docx/.xlsx are both zip archives under the hood (OOXML) and share the same
+# magic bytes - the extension picks which loader runs in ingest_files.py, the
+# magic check here only confirms "this really is a zip", not which kind.
+# .txt has no fixed signature at all, so it's checked differently: it must
+# decode as UTF-8 text rather than match a byte prefix. Legacy binary .doc
+# (pre-2007 Word) is deliberately NOT supported - it needs different, heavier
+# tooling than anything else here.
 # ---------------------------------------------------------------------------
 
 _PDF_MAGIC = b"%PDF-"
-_ZIP_MAGIC = b"PK\x03\x04"  # .xlsx is a zip archive under the hood
+_ZIP_MAGIC = b"PK\x03\x04"
 
 _EXPECTED_MAGIC = {
     ".pdf": (_PDF_MAGIC, "PDF"),
     ".xlsx": (_ZIP_MAGIC, "XLSX"),
+    ".docx": (_ZIP_MAGIC, "DOCX"),
 }
+_TEXT_EXTENSIONS = {".txt"}
+SUPPORTED_EXTENSIONS = sorted(set(_EXPECTED_MAGIC) | _TEXT_EXTENSIONS)
 
 
 def validate_file_type(filename: str, content_bytes: bytes, check: str = "file_type") -> Dict[str, Any]:
     ext = Path(filename or "").suffix.lower()
-    expected = _EXPECTED_MAGIC.get(ext)
 
+    if ext in _TEXT_EXTENSIONS:
+        try:
+            content_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            reason = "File content is not valid UTF-8 text."
+            logger.warning("Guardrail blocked at ingest.%s: %s (filename=%r)", check, reason, filename)
+            return {"check": check, "passed": False, "reason": reason}
+        return {"check": check, "passed": True, "reason": None}
+
+    expected = _EXPECTED_MAGIC.get(ext)
     if expected is None:
-        reason = f"Unsupported file extension '{ext or '(none)'}'. Must be one of: {', '.join(_EXPECTED_MAGIC)}."
+        reason = f"Unsupported file extension '{ext or '(none)'}'. Must be one of: {', '.join(SUPPORTED_EXTENSIONS)}."
         logger.warning("Guardrail blocked at ingest.%s: %s", check, reason)
         return {"check": check, "passed": False, "reason": reason}
 

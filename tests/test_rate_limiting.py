@@ -30,10 +30,12 @@ def test_ingest_rate_limit_blocks_after_threshold(client, admin_headers, monkeyp
     monkeypatch.setattr(
         ingest_files_module,
         "ingest_files",
-        lambda file_paths, collection_name: {
+        lambda file_paths, user_id: {
             "passed": True,
             "message": "ok",
             "pii_event": {"check": "pii_masking", "passed": True, "reason": None, "pii_detected": []},
+            "chunk_count": 1,
+            "extracted_text": "content",
         },
     )
 
@@ -41,7 +43,6 @@ def test_ingest_rate_limit_blocks_after_threshold(client, admin_headers, monkeyp
         resp = client.post(
             "/api/v1/ingest",
             files={"file": ("small.pdf", PDF_BYTES, "application/pdf")},
-            params={"collection_name": "warranty"},
             headers=admin_headers,
         )
         assert resp.status_code == 200, f"call {i} unexpectedly failed: {resp.text}"
@@ -49,7 +50,6 @@ def test_ingest_rate_limit_blocks_after_threshold(client, admin_headers, monkeyp
     over_limit = client.post(
         "/api/v1/ingest",
         files={"file": ("small.pdf", PDF_BYTES, "application/pdf")},
-        params={"collection_name": "warranty"},
         headers=admin_headers,
     )
     assert over_limit.status_code == 429

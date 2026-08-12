@@ -1,3 +1,5 @@
+import os
+
 import streamlit as st
 import requests
 from pathlib import Path
@@ -5,8 +7,8 @@ from app.core.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Define the FastAPI backend URL
-API_BASE_URL = "http://localhost:8000/api/v1"
+# Define the FastAPI backend URL (override via API_BASE_URL, e.g. http://backend:8000/api/v1 in Docker)
+API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000/api/v1")
 
 st.set_page_config(page_title="RAG Chatbot", page_icon="🤖", layout="wide")
 

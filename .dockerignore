@@ -1,0 +1,16 @@
+.venv
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+.git
+.gitignore
+.claude
+tests
+logs
+chroma_db
+app/uploads
+app/extracted_images
+frontend
+.env
+*.md

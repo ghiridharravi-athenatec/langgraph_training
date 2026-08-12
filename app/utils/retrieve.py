@@ -29,11 +29,10 @@ from app.core.guardrails import (
 
 load_dotenv()
 logger = get_logger(__name__)
-_bm25_cache = {}
 
 device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 DB_NAME = "rag_database"
-_vectorstore_cache = {}
+DOCUMENT_CHUNKS_COLLECTION = "document_chunks"  # single collection - general-purpose ingestion, no document-category split
 
 embedding_model = HuggingFaceEmbeddings(
     model_name="BAAI/bge-m3",
@@ -53,7 +52,7 @@ client = genai.Client(api_key=API_KEY)
 
 
 class RAGState(TypedDict):
-    collection_name: str
+    user_id: str
     question: str
     retrieved_chunks: List[Dict[str, Any]]
     reranked_chunks: List[Dict[str, Any]]
@@ -67,8 +66,13 @@ class RAGState(TypedDict):
     guardrail_events: Annotated[List[Dict[str, Any]], operator.add]
     token_count: Annotated[int, operator.add]
 
-_vectorstore_cache = {}
 _mongo_client = None
+_vectorstore = None
+# Per-user, unlike the single shared _vectorstore: BM25 has no server-side filter
+# clause the way Atlas Vector Search does, so keeping retrieval scoped to one user's
+# own chunks means building a separate in-memory index per user rather than one
+# shared index with a query-time filter.
+_bm25_retrievers: Dict[str, Any] = {}
 
 def get_mongo_client():
     global _mongo_client
@@ -77,32 +81,38 @@ def get_mongo_client():
         _mongo_client = MongoClient(mongo_uri)
     return _mongo_client
 
-def get_vectorstore(collection_name: str):
-    if collection_name not in _vectorstore_cache:
+def get_vectorstore():
+    global _vectorstore
+    if _vectorstore is None:
         client = get_mongo_client()
-        collection = client[DB_NAME][collection_name]
-        _vectorstore_cache[collection_name] = MongoDBAtlasVectorSearch(
+        collection = client[DB_NAME][DOCUMENT_CHUNKS_COLLECTION]
+        _vectorstore = MongoDBAtlasVectorSearch(
             collection=collection,
             embedding=embedding_model,
             index_name="default",
             text_key="text",
             embedding_key="embedding"
         )
-    return _vectorstore_cache[collection_name]
+    return _vectorstore
 
 
-def get_bm25_retriever(collection_name: str):
+def invalidate_bm25_cache(user_id: str) -> None:
+    '''Called after a user ingests a new document so their next chat request rebuilds
+    the BM25 index instead of searching a stale one that predates the upload.'''
+    _bm25_retrievers.pop(user_id, None)
 
-    if collection_name in _bm25_cache:
-        return _bm25_cache[collection_name]
+
+def get_bm25_retriever(user_id: str):
+    if user_id in _bm25_retrievers:
+        return _bm25_retrievers[user_id]
 
     client = get_mongo_client()
-    collection = client[DB_NAME][collection_name]
+    collection = client[DB_NAME][DOCUMENT_CHUNKS_COLLECTION]
 
     docs = []
 
     cursor = collection.find(
-        {},
+        {"user_id": user_id},
         {
             "text": 1,
             "source": 1,
@@ -127,13 +137,14 @@ def get_bm25_retriever(collection_name: str):
         )
 
     if not docs:
-        logger.warning("Collection '%s' has no documents; skipping BM25 retriever.", collection_name)
+        logger.warning("No ingested documents for user %s yet; skipping BM25 retriever.", user_id)
+        _bm25_retrievers[user_id] = None
         return None
 
     retriever = BM25Retriever.from_documents(docs)
     retriever.k = 10
 
-    _bm25_cache[collection_name] = retriever
+    _bm25_retrievers[user_id] = retriever
 
     return retriever
 
@@ -223,14 +234,18 @@ def validate_input_node(state: RAGState):
 def retrieve_node(state: RAGState):
 
     query = state["question"]
+    user_id = state["user_id"]
 
-    vectorstore = get_vectorstore(state["collection_name"])
-    bm25 = get_bm25_retriever(state["collection_name"])
+    vectorstore = get_vectorstore()
+    bm25 = get_bm25_retriever(user_id)
 
-    # Dense Retrieval
+    # Dense Retrieval - pre_filter scopes the Atlas Vector Search itself to this
+    # user's own chunks (requires "user_id" to be a filter field in the search index -
+    # see create_vector_search_index), not just filtered after the fact.
     dense_results = vectorstore.similarity_search_with_score(
         query=query,
         k=10,
+        pre_filter={"user_id": {"$eq": user_id}},
     )
 
     dense_docs = []
@@ -239,7 +254,8 @@ def retrieve_node(state: RAGState):
         doc.metadata["vector_score"] = float(score)
         dense_docs.append(doc)
 
-    # Sparse Retrieval
+    # Sparse Retrieval - bm25 is already built from only this user's chunks (see
+    # get_bm25_retriever), so no separate filtering needed here.
     sparse_docs = bm25.invoke(query) if bm25 is not None else []
 
     # Hybrid Fusion

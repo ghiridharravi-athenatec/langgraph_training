@@ -2,6 +2,7 @@ from datetime import date
 
 from app.core import config
 from app.utils.mongo import increment_usage
+from tests.conftest import seed_document
 
 
 def _grant_ragchatbot(client, admin_headers, user_id):
@@ -19,6 +20,7 @@ def test_user_blocked_once_daily_quota_exhausted(client, admin_headers, user_hea
         lambda self, question: {"intent": "greetings", "confidence": 0.99, "guardrail_events": []},
     )
     _grant_ragchatbot(client, admin_headers, user_id)
+    seed_document(user_id)
 
     increment_usage(user_id, date.today().isoformat(), config.DAILY_TOKEN_QUOTA)
 
@@ -37,6 +39,7 @@ def test_admin_exempt_from_quota(client, admin_headers, monkeypatch):
         lambda self, question: {"intent": "greetings", "confidence": 0.99, "guardrail_events": []},
     )
     me = client.get("/api/v1/auth/me", headers=admin_headers).json()
+    seed_document(me["id"])
     increment_usage(me["id"], date.today().isoformat(), config.DAILY_TOKEN_QUOTA * 10)
 
     resp = client.post("/api/v1/chat", json={"question": "hello there"}, headers=admin_headers)
@@ -50,6 +53,7 @@ def test_usage_below_quota_passes(client, admin_headers, user_headers, user_id, 
         lambda self, question: {"intent": "greetings", "confidence": 0.99, "guardrail_events": []},
     )
     _grant_ragchatbot(client, admin_headers, user_id)
+    seed_document(user_id)
     increment_usage(user_id, date.today().isoformat(), config.DAILY_TOKEN_QUOTA - 10)
 
     resp = client.post("/api/v1/chat", json={"question": "hello there"}, headers=user_headers)

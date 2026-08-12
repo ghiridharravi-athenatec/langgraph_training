@@ -22,38 +22,19 @@ class IntentClassifier:
     def classify_intent(self, user_prompt: str) -> dict:
 
         prompt = f"""
-                    You are an intent classification and prompt-safety model for a RAG assistant that only
-                    answers questions about product warranty, user manuals, and inspection reports.
+                    You are an intent classification and prompt-safety model for a general-purpose
+                    document Q&A assistant. Users ask questions about whatever documents have been
+                    uploaded to it - the content is not known in advance and spans any topic.
 
                     Step 1 - Classify the user's query into exactly one of the following intents:
-                    1. warranty
-                    - Questions related to warranty period
-                    - Warranty registration
-                    - Warranty claim
-                    - Warranty coverage
-                    - Replacement under warranty
-                    - Warranty terms
-
-                    2. user_manual
-                    - Questions asking how to use a product
-                    - Installation
-                    - Setup
-                    - Operating instructions
-                    - Troubleshooting
-                    - Features
-                    - Maintenance
-
-                    3. inspection_report
-                    - Questions about inspection findings or results
-                    - Defects, damage, or issues noted during inspection
-                    - Inspection date, status, or pass/fail outcome
-                    - Compliance or safety inspection details
-                    - Inspector notes, checklists, or recommendations
-
-                    4. greetings
+                    1. greetings
                     - Salutations
                     - Farewells
-                    - Polite inquiries
+                    - Polite inquiries with no actual question in them
+
+                    2. question
+                    - Any question the user wants answered from the ingested documents,
+                      regardless of topic.
 
                     {INJECTION_DETECTION_INSTRUCTIONS}
 
@@ -63,7 +44,7 @@ class IntentClassifier:
                     Return ONLY valid JSON.
                     Schema:
                     {{
-                        "intent": "warranty" | "user_manual" | "inspection_report" | "greetings",
+                        "intent": "greetings" | "question",
                         "confidence": 0.0-1.0,
                         {INJECTION_DETECTION_SCHEMA_FIELDS}
                     }}
