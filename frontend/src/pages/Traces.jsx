@@ -140,10 +140,13 @@ const SAFETY_THRESHOLD_OPTIONS = [
   { value: "BLOCK_LOW_AND_ABOVE", label: "Low and above (strictest)" },
 ];
 
-// Same field groups as before, but a PII detection / Model safety config knob
-// governs a check at more than one pipeline stage (question AND answer), so
-// that group object is reused as-is under every category it applies to -
-// editing it in one place edits the same config key everywhere it appears.
+// PII detection is a separate, independently-tunable config for input
+// (question) vs. output (answer) - see INPUT_PII_DETECTION_GROUP /
+// OUTPUT_PII_DETECTION_GROUP below. Model safety still governs both stages
+// through one shared config key, so that group object is reused as-is under
+// both categories - editing it in one place edits the same config key
+// everywhere it appears. (Document ingestion has its own separate PII policy
+// too, but that lives on the Document Ingestion upload screen, not here.)
 const INPUT_LENGTH_GROUP = {
   name: "Input",
   fields: [
@@ -160,22 +163,34 @@ const INPUT_LENGTH_GROUP = {
 
 const QUOTA_GROUP = {
   name: "Quota",
-  fields: [
-    { key: "daily_token_quota", label: "Daily token quota per user", type: "number", min: 0, max: 10000000, step: 1000 },
-  ],
+  fields: [],
 };
 
-const PII_DETECTION_GROUP = {
+const INPUT_PII_DETECTION_GROUP = {
   name: "PII detection",
   fields: [
     {
-      key: "pii_entities",
+      key: "input_pii_entities",
       label: "Entity types to detect",
       type: "checkboxes",
       options: PII_ENTITY_OPTIONS,
-      hint: "Applies to both the question and the generated answer.",
+      hint: "Applies to the incoming question only.",
     },
-    { key: "pii_score_threshold", label: "Detection confidence threshold", type: "score" },
+    { key: "input_pii_score_threshold", label: "Detection confidence threshold", type: "score" },
+  ],
+};
+
+const OUTPUT_PII_DETECTION_GROUP = {
+  name: "PII detection",
+  fields: [
+    {
+      key: "output_pii_entities",
+      label: "Entity types to detect",
+      type: "checkboxes",
+      options: PII_ENTITY_OPTIONS,
+      hint: "Applies to the generated answer only.",
+    },
+    { key: "output_pii_score_threshold", label: "Detection confidence threshold", type: "score" },
   ],
 };
 
@@ -242,7 +257,7 @@ const CONFIG_FIELD_CATEGORIES = [
     name: "Input",
     subgroups: [
       { name: "Deterministic", groups: [INPUT_LENGTH_GROUP, QUOTA_GROUP] },
-      { name: "Model-based", groups: [PII_DETECTION_GROUP, MODEL_SAFETY_GROUP, INTENT_GROUP] },
+      { name: "Model-based", groups: [INPUT_PII_DETECTION_GROUP, MODEL_SAFETY_GROUP, INTENT_GROUP] },
     ],
   },
   {
@@ -256,7 +271,7 @@ const CONFIG_FIELD_CATEGORIES = [
     name: "Output",
     subgroups: [
       { name: "Deterministic", groups: [OUTPUT_GROUP] },
-      { name: "Model-based", groups: [PII_DETECTION_GROUP, MODEL_SAFETY_GROUP, ANSWER_QUALITY_GROUP] },
+      { name: "Model-based", groups: [OUTPUT_PII_DETECTION_GROUP, MODEL_SAFETY_GROUP, ANSWER_QUALITY_GROUP] },
     ],
   },
 ];
@@ -392,6 +407,122 @@ function ConfigField({ field, value, onChange, disabled }) {
   }
 }
 
+function UserQuotaEditor({ globalDefault }) {
+  const [users, setUsers] = useState([]);
+  const [status, setStatus] = useState("loading");
+  const [error, setError] = useState("");
+  const [selectedId, setSelectedId] = useState("");
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveMessage, setSaveMessage] = useState(null);
+
+  useEffect(() => {
+    api
+      .get("/admin/users")
+      .then(({ data }) => {
+        setUsers(data);
+        if (data.length > 0) setSelectedId(data[0].id);
+        setStatus("ready");
+      })
+      .catch((err) => {
+        setError(formatErrorDetail(err, "Failed to load users."));
+        setStatus("error");
+      });
+  }, []);
+
+  const selectedUser = users.find((u) => u.id === selectedId) || null;
+  const hasOverride =
+    !!selectedUser && selectedUser.daily_token_quota !== null && selectedUser.daily_token_quota !== undefined;
+
+  useEffect(() => {
+    if (selectedUser) {
+      setDraft(hasOverride ? String(selectedUser.daily_token_quota) : String(globalDefault));
+      setSaveMessage(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId]);
+
+  async function persistQuota(quota) {
+    if (!selectedUser) return;
+    setSaving(true);
+    setSaveMessage(null);
+    try {
+      const { data } = await api.put(`/admin/users/${selectedUser.id}/quota`, { daily_token_quota: quota });
+      setUsers((prev) => prev.map((u) => (u.id === data.id ? data : u)));
+      return true;
+    } catch (err) {
+      setSaveMessage({ ok: false, text: formatErrorDetail(err, "Failed to update quota.") });
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleSave() {
+    const raw = draft.trim();
+    const quota = raw === "" ? null : Number(raw);
+    if (quota !== null && (!Number.isFinite(quota) || quota < 0)) {
+      setSaveMessage({ ok: false, text: "Quota must be a non-negative number." });
+      return;
+    }
+    if (await persistQuota(quota)) {
+      setSaveMessage({ ok: true, text: "Saved." });
+    }
+  }
+
+  async function handleResetToDefault() {
+    if (await persistQuota(null)) {
+      setDraft(String(globalDefault));
+      setSaveMessage({ ok: true, text: "Reset to default." });
+    }
+  }
+
+  if (status === "loading") return <p className="muted">Loading users…</p>;
+  if (status === "error") return <p className="form-error">{error}</p>;
+
+  return (
+    <div className="gr-user-quota">
+      <div className="gr-field">
+        <span className="field-label">User</span>
+        <select value={selectedId} onChange={(e) => setSelectedId(e.target.value)}>
+          {users.map((user) => (
+            <option key={user.id} value={user.id}>
+              {user.email}
+              {user.role === "admin" ? " (admin)" : ""}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="gr-field">
+        <span className="field-label">Daily token quota</span>
+        <input
+          type="number"
+          min={0}
+          value={draft}
+          disabled={saving || !selectedUser}
+          onChange={(e) => setDraft(e.target.value)}
+        />
+        <span className="gr-field-hint">
+          {hasOverride
+            ? "Custom quota for this user."
+            : `Using the default (${Number(globalDefault).toLocaleString()}) - every user starts here unless overridden, admins included.`}
+        </span>
+      </div>
+      <div className="gr-config-actions">
+        <button className="btn-primary" onClick={handleSave} disabled={saving || !selectedUser}>
+          {saving ? "Saving…" : "Save"}
+        </button>
+        <button className="btn-secondary" onClick={handleResetToDefault} disabled={saving || !selectedUser || !hasOverride}>
+          Reset to default
+        </button>
+        {saveMessage && (
+          <span className={saveMessage.ok ? "sidebar-status-ok" : "sidebar-status-error"}>{saveMessage.text}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function GuardrailsTab() {
   const { isAdmin } = useAuth();
   const catalogGroups = groupChecklistByCategory();
@@ -479,6 +610,9 @@ function GuardrailsTab() {
                       {sub.groups.map((group) => (
                         <div key={group.name} className="ingest-card gr-config-group">
                           <h3>{group.name}</h3>
+                          {group.name === "Quota" && isAdmin && (
+                            <UserQuotaEditor globalDefault={config.daily_token_quota} />
+                          )}
                           {group.fields.map((field) => (
                             <div key={field.key} className="gr-field">
                               <span className="field-label">{field.label}</span>

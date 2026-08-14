@@ -24,7 +24,7 @@ def test_ingest_rejects_content_not_matching_extension(client, admin_headers):
 def test_ingest_accepts_plain_text_files(client, admin_headers, monkeypatch):
     import app.utils.ingest_files as ingest_files_module
 
-    def fake_ingest_files(file_paths, user_id):
+    def fake_ingest_files(file_paths, user_id, pii_entities=None):
         return {
             "passed": True,
             "message": "Document ingested successfully. Total chunks: 1",
@@ -72,7 +72,7 @@ def test_ingest_valid_pdf_passes_type_and_size_checks(client, admin_headers, mon
     # imported locally inside the route, so patch the module it's imported from.
     import app.utils.ingest_files as ingest_files_module
 
-    def fake_ingest_files(file_paths, user_id):
+    def fake_ingest_files(file_paths, user_id, pii_entities=None):
         return {
             "passed": True,
             "message": "Document ingested successfully. Total chunks: 3",

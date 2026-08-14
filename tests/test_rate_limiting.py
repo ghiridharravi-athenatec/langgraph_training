@@ -30,7 +30,7 @@ def test_ingest_rate_limit_blocks_after_threshold(client, admin_headers, monkeyp
     monkeypatch.setattr(
         ingest_files_module,
         "ingest_files",
-        lambda file_paths, user_id: {
+        lambda file_paths, user_id, pii_entities=None: {
             "passed": True,
             "message": "ok",
             "pii_event": {"check": "pii_masking", "passed": True, "reason": None, "pii_detected": []},

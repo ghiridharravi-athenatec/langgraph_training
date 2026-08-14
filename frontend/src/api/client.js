@@ -1,7 +1,12 @@
 import axios from "axios";
 
+// Relative path works when the frontend and API share an origin (local `vite
+// dev` proxy, or the docker-compose nginx frontend proxying /api/ to the
+// backend container). A split deployment - this app on Vercel, the API on a
+// different host/Space - needs an absolute URL instead; set VITE_API_BASE_URL
+// at build time for that case.
 const api = axios.create({
-  baseURL: "/api/v1",
+  baseURL: import.meta.env.VITE_API_BASE_URL || "/api/v1",
   withCredentials: true,
 });
 

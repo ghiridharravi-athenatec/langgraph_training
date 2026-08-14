@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Any, Dict, List
 
-from app.core import config
+from app.core import config, guardrail_config
 from app.core.guardrails import redact_pii, summarize_masked_pii
 from app.core.logger import get_logger
 
@@ -84,14 +84,32 @@ def validate_file_size(size_bytes: int, check: str = "file_size") -> Dict[str, A
 # The same redact_pii()/summarize_masked_pii() already used on chat questions
 # and answers, applied to every chunk *before* it's embedded and stored - PII
 # baked into an uploaded PDF/XLSX shouldn't sit unmasked in the vector store.
+#
+# entities/score_threshold are the uploader's own choice from the Document
+# Ingestion screen (any user, not just admins - see POST /ingest's
+# `pii_entities` form field), falling back to guardrail_config's
+# ingest_pii_entities/ingest_pii_score_threshold defaults when the uploader
+# didn't pick anything. This is a separate policy from chat input/output PII
+# detection, which admins tune on the Guardrails page instead.
 # ---------------------------------------------------------------------------
 
-def scan_ingested_pii(chunks: List[Any], check: str = "pii_masking") -> Dict[str, Any]:
+def scan_ingested_pii(
+    chunks: List[Any],
+    entities: List[str] = None,
+    score_threshold: float = None,
+    check: str = "pii_masking",
+) -> Dict[str, Any]:
+    cfg = guardrail_config.get_config()
+    if entities is None:
+        entities = cfg["ingest_pii_entities"]
+    if score_threshold is None:
+        score_threshold = cfg["ingest_pii_score_threshold"]
+
     aggregated: Dict[str, int] = {}
 
     for chunk in chunks:
         original = chunk.page_content
-        redacted = redact_pii(original)
+        redacted = redact_pii(original, entities, score_threshold)
         if redacted == original:
             continue
         chunk.page_content = redacted

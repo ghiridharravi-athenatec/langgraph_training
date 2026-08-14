@@ -61,13 +61,27 @@ def test_reset_restores_defaults(client, admin_headers):
 
 
 def test_update_rejects_out_of_range_score(client, admin_headers):
-    resp = client.put("/api/v1/traces/guardrail-config", json={"pii_score_threshold": 5}, headers=admin_headers)
+    resp = client.put("/api/v1/traces/guardrail-config", json={"input_pii_score_threshold": 5}, headers=admin_headers)
     assert resp.status_code == 422
 
 
 def test_update_rejects_unknown_pii_entity(client, admin_headers):
-    resp = client.put("/api/v1/traces/guardrail-config", json={"pii_entities": ["NOT_A_REAL_ENTITY"]}, headers=admin_headers)
+    resp = client.put(
+        "/api/v1/traces/guardrail-config", json={"input_pii_entities": ["NOT_A_REAL_ENTITY"]}, headers=admin_headers
+    )
     assert resp.status_code == 422
+
+
+def test_input_and_output_pii_entities_are_independent(client, admin_headers):
+    resp = client.put(
+        "/api/v1/traces/guardrail-config",
+        json={"input_pii_entities": ["EMAIL_ADDRESS"]},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["input_pii_entities"] == ["EMAIL_ADDRESS"]
+    assert body["output_pii_entities"] != ["EMAIL_ADDRESS"]  # unaffected by the input-only edit
 
 
 def test_update_rejects_min_greater_than_max_question_length(client, admin_headers):

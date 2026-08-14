@@ -1,6 +1,10 @@
 '''Admin-editable overrides for the guardrail pipeline's tunable thresholds and
-lists ("rubrics") - question length, blocked keywords, PII entity types and
-score threshold, daily quota, model-safety categories/threshold, intent
+lists ("rubrics") - question length, blocked keywords, separate PII entity
+types/score thresholds for chat input vs. chat output (ingestion has its own
+defaults here too, but that one's exposed on the Document Ingestion upload
+screen for any user, not the admin-only Guardrails page - see the
+`ingest_pii_entities` comment below), daily quota, model-safety
+categories/threshold, intent
 confidence, semantic cache thresholds, retrieval relevance, context budget,
 groundedness, URL allowlist, and answer length. Structural checks (the
 injection regex, the LLM injection-judgment prompt, JSON schema validation,
@@ -45,12 +49,30 @@ DEFAULTS: Dict[str, Any] = {
     "min_question_length": 2,
     "max_question_length": 2000,
     "blocked_keywords": ["make a bomb", "kill yourself", "suicide method"],
-    "pii_entities": [
+    "input_pii_entities": [
         "EMAIL_ADDRESS", "PHONE_NUMBER", "CREDIT_CARD", "US_SSN", "US_BANK_NUMBER",
         "US_DRIVER_LICENSE", "US_PASSPORT", "IBAN_CODE", "IP_ADDRESS", "CRYPTO",
         "PERSON", "LOCATION", "NRP", "MEDICAL_LICENSE",
     ],
-    "pii_score_threshold": 0.4,
+    "input_pii_score_threshold": 0.4,
+    "output_pii_entities": [
+        "EMAIL_ADDRESS", "PHONE_NUMBER", "CREDIT_CARD", "US_SSN", "US_BANK_NUMBER",
+        "US_DRIVER_LICENSE", "US_PASSPORT", "IBAN_CODE", "IP_ADDRESS", "CRYPTO",
+        "PERSON", "LOCATION", "NRP", "MEDICAL_LICENSE",
+    ],
+    "output_pii_score_threshold": 0.4,
+    # Not admin-editable via the Guardrails page's config PUT - this is only the
+    # fallback used when a document is ingested without an explicit entity
+    # selection. The per-upload choice itself lives on the Document Ingestion
+    # screen (see /ingest/pii-options and the `pii_entities` form field on
+    # POST /ingest), open to every user, not just admins - a user redacting
+    # their own upload doesn't need admin permission to pick what gets masked.
+    "ingest_pii_entities": [
+        "EMAIL_ADDRESS", "PHONE_NUMBER", "CREDIT_CARD", "US_SSN", "US_BANK_NUMBER",
+        "US_DRIVER_LICENSE", "US_PASSPORT", "IBAN_CODE", "IP_ADDRESS", "CRYPTO",
+        "PERSON", "LOCATION", "NRP", "MEDICAL_LICENSE",
+    ],
+    "ingest_pii_score_threshold": 0.4,
     "daily_token_quota": config.DAILY_TOKEN_QUOTA,
     "model_safety_categories": [
         "HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH",

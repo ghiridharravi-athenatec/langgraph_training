@@ -18,8 +18,10 @@ class GuardrailConfigOut(BaseModel):
     min_question_length: int
     max_question_length: int
     blocked_keywords: List[str]
-    pii_entities: List[str]
-    pii_score_threshold: float
+    input_pii_entities: List[str]
+    input_pii_score_threshold: float
+    output_pii_entities: List[str]
+    output_pii_score_threshold: float
     daily_token_quota: int
     model_safety_categories: List[str]
     model_safety_threshold: str
@@ -47,8 +49,10 @@ class GuardrailConfigUpdate(BaseModel):
     min_question_length: Optional[int] = Field(None, ge=0, le=500)
     max_question_length: Optional[int] = Field(None, ge=10, le=20000)
     blocked_keywords: Optional[List[str]] = None
-    pii_entities: Optional[List[str]] = None
-    pii_score_threshold: Optional[float] = Field(None, ge=0, le=1)
+    input_pii_entities: Optional[List[str]] = None
+    input_pii_score_threshold: Optional[float] = Field(None, ge=0, le=1)
+    output_pii_entities: Optional[List[str]] = None
+    output_pii_score_threshold: Optional[float] = Field(None, ge=0, le=1)
     daily_token_quota: Optional[int] = Field(None, ge=0)
     model_safety_categories: Optional[List[str]] = None
     model_safety_threshold: Optional[str] = None
@@ -67,7 +71,7 @@ class GuardrailConfigUpdate(BaseModel):
     def _clean_free_text_list(cls, v):
         return None if v is None else _clean_list(v)
 
-    @field_validator("pii_entities")
+    @field_validator("input_pii_entities", "output_pii_entities")
     @classmethod
     def _validate_pii_entities(cls, v):
         if v is None:

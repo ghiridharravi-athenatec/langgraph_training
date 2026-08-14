@@ -17,6 +17,26 @@ const SECTIONS = [
   { id: "tracing", label: "Tracing", icon: "≋" },
 ];
 
+// Human-readable labels for the entity type names GET /ingest/pii-options returns -
+// same catalog as PII_ENTITY_OPTIONS on the Guardrails page, kept separate since
+// this component doesn't import from Traces.jsx.
+const PII_ENTITY_LABELS = {
+  EMAIL_ADDRESS: "Email address",
+  PHONE_NUMBER: "Phone number",
+  CREDIT_CARD: "Credit card",
+  US_SSN: "SSN",
+  US_BANK_NUMBER: "Bank account number",
+  US_DRIVER_LICENSE: "Driver's license",
+  US_PASSPORT: "Passport number",
+  IBAN_CODE: "IBAN",
+  IP_ADDRESS: "IP address",
+  CRYPTO: "Crypto wallet address",
+  PERSON: "Person name",
+  LOCATION: "Location",
+  NRP: "Nationality / religious / political group",
+  MEDICAL_LICENSE: "Medical license",
+};
+
 export default function RagChatbot() {
   const { user, logout } = useAuth();
 
@@ -35,6 +55,8 @@ export default function RagChatbot() {
   const [file, setFile] = useState(null);
   const [ingestStatus, setIngestStatus] = useState(null);
   const [ingesting, setIngesting] = useState(false);
+  const [piiOptions, setPiiOptions] = useState([]);
+  const [selectedPiiEntities, setSelectedPiiEntities] = useState([]);
 
   const [hasDocuments, setHasDocuments] = useState(null); // null = not checked yet, so the banner never flashes
 
@@ -47,7 +69,23 @@ export default function RagChatbot() {
   useEffect(() => {
     loadConversations({ selectFirst: true });
     checkDocumentsStatus();
+    loadPiiOptions();
   }, []);
+
+  async function loadPiiOptions() {
+    try {
+      const { data } = await api.get("/ingest/pii-options");
+      const options = data.available_entities.map((value) => ({
+        value,
+        label: PII_ENTITY_LABELS[value] || value,
+      }));
+      setPiiOptions(options);
+      setSelectedPiiEntities(data.default_entities || []);
+    } catch {
+      // Non-critical - the checklist just won't be editable this session; the
+      // backend still falls back to its own default entity list on upload.
+    }
+  }
 
   async function checkDocumentsStatus() {
     try {
@@ -157,6 +195,7 @@ export default function RagChatbot() {
     try {
       const form = new FormData();
       form.append("file", file);
+      form.append("pii_entities", JSON.stringify(selectedPiiEntities));
       const { data } = await api.post("/ingest", form);
       setIngestStatus({ ok: true, message: `Ingested '${file.name}'.`, guardrails: data.guardrails });
       setFile(null);
@@ -337,6 +376,33 @@ export default function RagChatbot() {
                     accept=".pdf,.xlsx,.docx,.txt"
                     onChange={(e) => setFile(e.target.files?.[0] || null)}
                   />
+
+                  {piiOptions.length > 0 && (
+                    <div className="gr-field">
+                      <span className="field-label">PII to mask before storing</span>
+                      <div className="gr-checkboxes">
+                        {piiOptions.map((opt) => (
+                          <label key={opt.value} className="gr-checkbox-row">
+                            <input
+                              type="checkbox"
+                              checked={selectedPiiEntities.includes(opt.value)}
+                              disabled={ingesting}
+                              onChange={(e) =>
+                                setSelectedPiiEntities((prev) =>
+                                  e.target.checked ? [...prev, opt.value] : prev.filter((v) => v !== opt.value)
+                                )
+                              }
+                            />
+                            {opt.label}
+                          </label>
+                        ))}
+                      </div>
+                      <span className="gr-field-hint">
+                        Unchecked types are stored as-is. This choice only applies to this upload.
+                      </span>
+                    </div>
+                  )}
+
                   <button type="submit" className="btn-secondary btn-block" disabled={!file || ingesting}>
                     {ingesting ? "Ingesting…" : "Ingest document"}
                   </button>

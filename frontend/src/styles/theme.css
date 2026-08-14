@@ -956,6 +956,12 @@ button:disabled {
   gap: 16px;
 }
 
+.gr-user-quota {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
 .gr-field {
   display: flex;
   flex-direction: column;

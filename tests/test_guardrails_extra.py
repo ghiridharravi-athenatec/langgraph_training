@@ -80,18 +80,13 @@ def test_groundedness_passes_similar_answer():
     assert event["passed"] is True
 
 
-def test_quota_admin_always_passes():
-    event = validate_quota(tokens_used_today=999_999_999, is_admin=True)
-    assert event["passed"] is True
-
-
 def test_quota_blocks_over_cap():
-    event = validate_quota(tokens_used_today=999_999_999, is_admin=False)
+    event = validate_quota(tokens_used_today=999_999_999, daily_quota=1000)
     assert event["passed"] is False
 
 
 def test_quota_passes_under_cap():
-    event = validate_quota(tokens_used_today=0, is_admin=False)
+    event = validate_quota(tokens_used_today=0, daily_quota=1000)
     assert event["passed"] is True
 
 

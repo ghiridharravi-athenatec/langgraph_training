@@ -1,13 +1,14 @@
 import asyncio
 import concurrent.futures
+import json
 import time
 from datetime import date
+from typing import Optional
 from fastapi import FastAPI, APIRouter, Depends
-from fastapi import UploadFile, File, HTTPException
+from fastapi import UploadFile, File, Form, HTTPException
 from pathlib import Path
 import uuid, os
 from app.utils.mongo import (
-    ROLE_ADMIN,
     add_message,
     create_conversation,
     create_document_record,
@@ -21,10 +22,11 @@ from app.schemas.retrieval_schema import QAResponse
 from app.utils.llm import IntentClassifier
 from dotenv import load_dotenv
 from app.utils.retrieve import compiled_graph, embedding_model, invalidate_bm25_cache
-from app.core import config
+from app.core import config, guardrail_config
 from app.core.logger import get_logger
 from app.core.guardrails import validate_input, validate_has_documents, evaluate_intent_detection, validate_quota
 from app.core.ingest_guardrails import validate_file_size, validate_file_type
+from app.schemas.guardrail_config_schema import KNOWN_PII_ENTITIES
 from app.core.rate_limit import rate_limit
 from app.core.security import require_project_access
 from app.core.semantic_cache import find_cache_match
@@ -80,9 +82,22 @@ async def _run_with_timeout(fn, *args, stage: str, timeout_seconds: int = config
         return None, {"stage": "timeout", "passed": False, "reason": reason, "timed_out_stage": stage}
 
 
+@router.get("/ingest/pii-options")
+def get_ingest_pii_options(current_user: dict = Depends(_require_ragchatbot_access)):
+    '''Powers the PII checklist on the Document Ingestion upload screen - every user
+    picks their own entity list for their own upload here, separate from the
+    admin-only input/output PII settings on the Guardrails page.'''
+    cfg = guardrail_config.get_config()
+    return {
+        "available_entities": sorted(KNOWN_PII_ENTITIES),
+        "default_entities": cfg["ingest_pii_entities"],
+    }
+
+
 @router.post("/ingest")
 async def ingest(
     file: UploadFile = File(...),
+    pii_entities: Optional[str] = Form(None),
     current_user: dict = Depends(_require_ragchatbot_access),
     _rate_limit_check: dict = Depends(_ingest_rate_limit),
 ):
@@ -92,6 +107,10 @@ async def ingest(
     else's. The file is saved in the uploads directory, chunked, PII-masked, and embedded
     for retrieval; a record
     of who uploaded it is kept for the Documents tab.
+
+    pii_entities is a JSON-encoded array of entity type names, chosen by the uploader on
+    the Document Ingestion screen (GET /ingest/pii-options lists the available ones) -
+    None/omitted falls back to guardrail_config's ingest_pii_entities default.
     '''
     try:
         content_bytes = await file.read()
@@ -104,6 +123,18 @@ async def ingest(
         if not file_type_check["passed"]:
             raise HTTPException(status_code=400, detail=file_type_check["reason"])
 
+        parsed_pii_entities = None
+        if pii_entities is not None:
+            try:
+                parsed_pii_entities = json.loads(pii_entities)
+            except (json.JSONDecodeError, TypeError):
+                raise HTTPException(status_code=400, detail="pii_entities must be a JSON array of entity type names.")
+            if not isinstance(parsed_pii_entities, list) or not all(isinstance(e, str) for e in parsed_pii_entities):
+                raise HTTPException(status_code=400, detail="pii_entities must be a JSON array of entity type names.")
+            unknown = set(parsed_pii_entities) - KNOWN_PII_ENTITIES
+            if unknown:
+                raise HTTPException(status_code=400, detail=f"Unknown PII entity type(s): {', '.join(sorted(unknown))}")
+
         # Generate unique filename
         extension = Path(file.filename).suffix
         filename = f"{uuid.uuid4()}{extension}"
@@ -114,7 +145,7 @@ async def ingest(
         logger.info("Saved uploaded file '%s' to '%s'", file.filename, file_path)
 
         from app.utils.ingest_files import ingest_files
-        ingest = ingest_files([str(file_path)], user_id=current_user["_id"])
+        ingest = ingest_files([str(file_path)], user_id=current_user["_id"], pii_entities=parsed_pii_entities)
 
         if ingest["passed"]:
             logger.info("Ingestion succeeded for '%s'", file.filename)
@@ -274,7 +305,10 @@ async def chat_with_document(
             _persist_turn(conversation_id, current_user["_id"], original_question, response, blocked=True, start_time=start)
             return response
 
-        quota_event = validate_quota(daily_usage, current_user.get("role") == ROLE_ADMIN)
+        daily_quota = current_user.get("daily_token_quota")
+        if daily_quota is None:
+            daily_quota = guardrail_config.get_config()["daily_token_quota"]
+        quota_event = validate_quota(daily_usage, daily_quota)
         if not quota_event["passed"]:
             logger.warning("Chat request blocked by quota guardrail: %s", quota_event["reason"])
             response = {

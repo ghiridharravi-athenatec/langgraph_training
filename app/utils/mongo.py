@@ -144,6 +144,18 @@ def list_users(db_name: str = DB_NAME) -> List[Dict[str, Any]]:
     return list(get_users_collection(db_name).find({}))
 
 
+def set_user_quota(user_id: str, daily_token_quota: Optional[int], db_name: str = DB_NAME) -> None:
+    '''Sets a per-user override for the daily token quota. None clears the override,
+    so the user falls back to guardrail_config's global default - same as any user
+    who never had one set.'''
+    update = (
+        {"$set": {"daily_token_quota": daily_token_quota}}
+        if daily_token_quota is not None
+        else {"$unset": {"daily_token_quota": ""}}
+    )
+    get_users_collection(db_name).update_one({"_id": user_id}, update)
+
+
 # ---------------------------------------------------------------------------
 # Projects
 # ---------------------------------------------------------------------------

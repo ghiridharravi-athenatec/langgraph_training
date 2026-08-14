@@ -246,7 +246,7 @@ _LOADERS = {
 }
 
 
-def ingest_files(file_paths: List[str], user_id: str):
+def ingest_files(file_paths: List[str], user_id: str, pii_entities: List[str] = None):
     try:
         logger.info("Starting ingestion of %d file(s) for user %s", len(file_paths), user_id)
         all_docs = []
@@ -277,7 +277,7 @@ def ingest_files(file_paths: List[str], user_id: str):
         for chunk in chunks:
             chunk.metadata["user_id"] = user_id
 
-        pii_event = scan_ingested_pii(chunks)
+        pii_event = scan_ingested_pii(chunks, entities=pii_entities)
 
         client = get_mongo_client()
         collection = client["rag_database"][DOCUMENT_CHUNKS_COLLECTION]

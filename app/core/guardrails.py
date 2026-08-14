@@ -115,19 +115,25 @@ def _redact_pii_regex(text: str) -> str:
     return redacted
 
 
-def redact_pii(text: str) -> str:
+def redact_pii(text: str, entities: List[str], score_threshold: float) -> str:
     '''Detects PII with local NER (Presidio/spaCy) and replaces each span with
     a reversibly-encrypted token. Falls back to regex-only redaction (no
-    reversal) if the NER model can't be loaded.'''
+    reversal) if the NER model can't be loaded.
+
+    entities/score_threshold are passed in rather than read from
+    guardrail_config here, since input, output, and document ingestion each
+    have their own independent PII policy - see validate_input/validate_output
+    (guardrail_config's input_pii_*/output_pii_* keys) and
+    ingest_guardrails.scan_ingested_pii (its own entities/score_threshold
+    params, defaulting to guardrail_config's ingest_pii_* keys).'''
     if not text:
         return text
 
-    cfg = guardrail_config.get_config()
     try:
         analyzer = _get_analyzer()
         results = analyzer.analyze(
-            text=text, entities=cfg["pii_entities"], language="en",
-            score_threshold=cfg["pii_score_threshold"],
+            text=text, entities=entities, language="en",
+            score_threshold=score_threshold,
         )
     except Exception:
         logger.exception("Presidio analyzer unavailable, falling back to regex-only PII redaction")
@@ -260,7 +266,7 @@ def validate_input(question: str) -> Dict[str, Any]:
             sanitized_question=None, category=failed["check"], checks=checks,
         )
 
-    sanitized = redact_pii(question)
+    sanitized = redact_pii(question, cfg["input_pii_entities"], cfg["input_pii_score_threshold"])
     pii_detected = summarize_masked_pii(sanitized)
     if pii_detected:
         logger.warning("Redacted PII from user question: %s", pii_detected)
@@ -389,7 +395,7 @@ def validate_output(answer: str) -> Dict[str, Any]:
         checks.append({"check": "pii_masking", "passed": None, "reason": "Skipped - blocked earlier", "pii_detected": []})
         return _event("output_validation", False, failed["reason"], sanitized_answer=None, checks=checks)
 
-    sanitized = redact_pii(answer)
+    sanitized = redact_pii(answer, cfg["output_pii_entities"], cfg["output_pii_score_threshold"])
     pii_detected = summarize_masked_pii(sanitized)
     if pii_detected:
         logger.warning("Redacted PII from generated answer: %s", pii_detected)
@@ -603,15 +609,12 @@ def evaluate_intent_detection(intent: str, confidence: float, stage: str = "inte
 # Checked before the expensive classify_intent/answer-generation calls run,
 # using whatever usage has already accumulated today (usage from *this*
 # request can't be known yet - it's added afterwards via extract_token_count).
-# Admins are exempted, consistent with their blanket project-access model.
+# daily_quota is resolved by the caller: a user's own per-user override (set
+# via PUT /admin/users/{id}/quota) if they have one, else the global default
+# from guardrail_config - applies uniformly, admins included.
 # ---------------------------------------------------------------------------
 
-def validate_quota(tokens_used_today: int, is_admin: bool, stage: str = "quota_check") -> Dict[str, Any]:
-    daily_quota = guardrail_config.get_config()["daily_token_quota"]
-
-    if is_admin:
-        return _event(stage, True, None, tokens_used_today=tokens_used_today, daily_quota=daily_quota)
-
+def validate_quota(tokens_used_today: int, daily_quota: int, stage: str = "quota_check") -> Dict[str, Any]:
     if tokens_used_today >= daily_quota:
         reason = f"Daily token quota exceeded ({tokens_used_today}/{daily_quota})."
         logger.warning("Guardrail blocked at %s: %s", stage, reason)

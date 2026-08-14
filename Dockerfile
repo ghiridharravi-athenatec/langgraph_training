@@ -28,9 +28,13 @@ COPY streamlit_app.py .
 # Runtime-writable dirs (log rotation, uploaded files, OCR-extracted images).
 RUN mkdir -p logs app/uploads app/extracted_images
 
-EXPOSE 8000
+# 7860 is Hugging Face Spaces' conventional Docker SDK port (see README.md's
+# `app_port` front matter) - used here instead of 8000 so this same image
+# deploys unchanged to a Space. Local docker-compose maps host 8000 to this
+# same container port, so `docker compose up` still serves on localhost:8000.
+EXPOSE 7860
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl -f http://localhost:8000/ || exit 1
+    CMD curl -f http://localhost:7860/ || exit 1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "7860"]
