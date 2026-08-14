@@ -1,7 +1,7 @@
 import re
-from typing import List
+from typing import List, Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 _PROJECT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 
@@ -53,3 +53,10 @@ class AdminUserOut(BaseModel):
     email: str
     role: str
     projects: List[str]
+    daily_token_quota: Optional[int] = None
+
+
+class UserQuotaUpdate(BaseModel):
+    '''None clears the user's override, falling back to the global default.'''
+
+    daily_token_quota: Optional[int] = Field(None, ge=0)

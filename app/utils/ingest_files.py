@@ -3,13 +3,13 @@ import fitz
 import pandas as pd
 
 from typing import List
+from docx import Document as DocxDocument
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_mongodb import MongoDBAtlasVectorSearch
 from langchain_community.embeddings import HuggingFaceEmbeddings
-from streamlit import pdf
 import torch
-from app.utils.mongo import get_mongo_client, create_vector_search_index
+from app.utils.mongo import DOCUMENT_CHUNKS_COLLECTION, get_mongo_client, create_vector_search_index
 import io
 from PIL import Image
 from paddleocr import PaddleOCR
@@ -22,7 +22,11 @@ ocr = PaddleOCR(
     use_doc_orientation_classify=False,
     use_doc_unwarping=False,
     use_textline_orientation=False,
-    lang="en"
+    lang="en",
+    # oneDNN's PIR executor path crashes on this CPU with
+    # "ConvertPirAttribute2RuntimeAttribute not support [pir::ArrayAttribute<pir::DoubleAttribute>]"
+    # on every image; the plain (non-mkldnn) run mode avoids that op path.
+    enable_mkldnn=False,
 )
 
 device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
@@ -191,16 +195,67 @@ def load_xlsx(xlsx_path: str) -> List[Document]:
     return docs
 
 
-def ingest_files(file_paths: List[str], collection_name: str):
+def load_docx(docx_path: str) -> List[Document]:
+    docs = []
+    doc = DocxDocument(docx_path)
+    source = os.path.basename(docx_path)
+
+    paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+    if paragraphs:
+        docs.append(
+            Document(
+                page_content="\n\n".join(paragraphs),
+                metadata={"source": source, "page": 0, "sheet_name": "", "content_type": "docx_text"},
+            )
+        )
+
+    for table in doc.tables:
+        rows = ["\t".join(cell.text for cell in row.cells) for row in table.rows]
+        table_text = "\n".join(rows)
+        if table_text.strip():
+            docs.append(
+                Document(
+                    page_content=table_text,
+                    metadata={"source": source, "page": 0, "sheet_name": "", "content_type": "docx_table"},
+                )
+            )
+
+    return docs
+
+
+def load_txt(txt_path: str) -> List[Document]:
+    with open(txt_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    if not content.strip():
+        return []
+
+    return [
+        Document(
+            page_content=content,
+            metadata={"source": os.path.basename(txt_path), "page": 0, "sheet_name": "", "content_type": "text"},
+        )
+    ]
+
+
+_LOADERS = {
+    ".pdf": load_pdf,
+    ".xlsx": load_xlsx,
+    ".docx": load_docx,
+    ".txt": load_txt,
+}
+
+
+def ingest_files(file_paths: List[str], user_id: str, pii_entities: List[str] = None):
     try:
-        logger.info("Starting ingestion of %d file(s) into collection '%s'", len(file_paths), collection_name)
+        logger.info("Starting ingestion of %d file(s) for user %s", len(file_paths), user_id)
         all_docs = []
 
         for path in file_paths:
-            if path.lower().endswith(".pdf"):
-                all_docs.extend(load_pdf(path))
-            elif path.lower().endswith(".xlsx"):
-                all_docs.extend(load_xlsx(path))
+            extension = os.path.splitext(path)[1].lower()
+            loader = _LOADERS.get(extension)
+            if loader is not None:
+                all_docs.extend(loader(path))
 
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=700,
@@ -216,10 +271,16 @@ def ingest_files(file_paths: List[str], collection_name: str):
 
         chunks = splitter.split_documents(all_docs)
 
-        pii_event = scan_ingested_pii(chunks)
+        # Stamped onto every chunk so retrieval can filter to this uploader's own
+        # documents only (see retrieve.py's pre_filter / per-user BM25 cache) - nobody,
+        # including admins, retrieves chunks another user uploaded.
+        for chunk in chunks:
+            chunk.metadata["user_id"] = user_id
+
+        pii_event = scan_ingested_pii(chunks, entities=pii_entities)
 
         client = get_mongo_client()
-        collection = client["rag_database"][collection_name]
+        collection = client["rag_database"][DOCUMENT_CHUNKS_COLLECTION]
 
         vectorstore = MongoDBAtlasVectorSearch.from_documents(
             documents=chunks,
@@ -228,16 +289,23 @@ def ingest_files(file_paths: List[str], collection_name: str):
             index_name="default",
         )
 
-        create_vector_search_index(collection_name)
+        create_vector_search_index(DOCUMENT_CHUNKS_COLLECTION)
 
-        logger.info("Ingestion completed for collection '%s'. Total chunks: %d", collection_name, len(chunks))
+        logger.info("Ingestion completed. Total chunks: %d", len(chunks))
+
+        # scan_ingested_pii already redacted chunk.page_content in place before this
+        # point, so the joined text below is already PII-masked - used as-is for the
+        # "extracted content" preview stored on the document record.
+        extracted_text = "\n\n".join(chunk.page_content for chunk in chunks)
 
         return {
             "passed": True,
-            "message": f"Document Ingested Successfully. Total chunks: {len(chunks)}",
+            "message": f"Document ingested successfully. Total chunks: {len(chunks)}",
             "pii_event": pii_event,
+            "chunk_count": len(chunks),
+            "extracted_text": extracted_text,
         }
 
     except Exception as e:
-        logger.exception("Error during ingestion into collection '%s': %s", collection_name, e)
+        logger.exception("Error during ingestion: %s", e)
         return {"passed": False, "error": str(e)}

@@ -37,8 +37,7 @@ def test_user_without_permission_403_on_ragchatbot_endpoints(client, user_header
     )
     assert ingest.status_code == 403
 
-    assert client.delete("/api/v1/clear/warranty", headers=user_headers).status_code == 403
-    assert client.delete("/api/v1/delete/warranty", headers=user_headers).status_code == 403
+    assert client.get("/api/v1/documents", headers=user_headers).status_code == 403
 
 
 def test_user_gains_access_after_grant_and_loses_it_after_revoke(

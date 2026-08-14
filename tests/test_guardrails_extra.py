@@ -1,25 +1,12 @@
 from app.core.guardrails import (
     _redact_urls,
     extract_token_count,
-    validate_collection_authorization,
     validate_context_budget,
     validate_groundedness,
     validate_json_schema,
     validate_output,
     validate_quota,
 )
-
-
-def test_collection_authorization_passes_known_collection():
-    event = validate_collection_authorization("warranty")
-    assert event["passed"] is True
-    assert event["collection_name"] == "warranty"
-
-
-def test_collection_authorization_blocks_unknown_collection():
-    event = validate_collection_authorization("made_up_collection")
-    assert event["passed"] is False
-    assert "made_up_collection" in event["reason"]
 
 
 def test_context_budget_keeps_small_context_untouched():
@@ -93,18 +80,13 @@ def test_groundedness_passes_similar_answer():
     assert event["passed"] is True
 
 
-def test_quota_admin_always_passes():
-    event = validate_quota(tokens_used_today=999_999_999, is_admin=True)
-    assert event["passed"] is True
-
-
 def test_quota_blocks_over_cap():
-    event = validate_quota(tokens_used_today=999_999_999, is_admin=False)
+    event = validate_quota(tokens_used_today=999_999_999, daily_quota=1000)
     assert event["passed"] is False
 
 
 def test_quota_passes_under_cap():
-    event = validate_quota(tokens_used_today=0, is_admin=False)
+    event = validate_quota(tokens_used_today=0, daily_quota=1000)
     assert event["passed"] is True
 
 

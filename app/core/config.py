@@ -20,6 +20,16 @@ FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
 
 REFRESH_COOKIE_NAME = "refresh_token"
 
+# Local/docker-compose dev serves the frontend and API from the same origin, so
+# the default (Lax, non-Secure) cookie works fine over plain HTTP. A split
+# deployment - frontend on Vercel, backend on a different origin (e.g. a
+# Hugging Face Space) - is cross-site from the browser's point of view, which
+# requires SameSite=None + Secure (browsers reject SameSite=None without
+# Secure) for the refresh cookie to be sent back at all. Set both when
+# deploying split.
+COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").strip().lower() == "true"
+COOKIE_SAMESITE = os.getenv("COOKIE_SAMESITE", "lax")
+
 # --- Ingestion guardrails ---
 MAX_UPLOAD_SIZE_MB = int(os.getenv("MAX_UPLOAD_SIZE_MB", "25"))
 

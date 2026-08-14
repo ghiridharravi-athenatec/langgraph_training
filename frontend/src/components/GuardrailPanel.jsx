@@ -1,3 +1,5 @@
+import { GUARDRAIL_CHECKLIST, groupChecklist } from "../data/guardrailChecklist";
+
 const PII_LABELS = {
   EMAIL_ADDRESS: "Email address",
   PHONE_NUMBER: "Phone number",
@@ -17,174 +19,6 @@ const PII_LABELS = {
 
 function piiLabel(entityType) {
   return PII_LABELS[entityType] || entityType;
-}
-
-// The full, fixed guardrail pipeline, in the order it actually runs. Every entry is
-// always shown, regardless of whether that check ran for a given message - `resolve`
-// pulls its real result out of the event data returned for this turn, or the row
-// falls back to "not run" (e.g. everything after input_validation when the request
-// got blocked at the very first stage).
-const CHECKLIST = [
-  {
-    id: "input.length",
-    label: "Input length",
-    group: "Input",
-    resolve: (events) => subCheck(events, "input_validation", "length"),
-  },
-  {
-    id: "input.prompt_injection_regex",
-    label: "Prompt injection (pattern match)",
-    group: "Input",
-    resolve: (events) => subCheck(events, "input_validation", "prompt_injection_regex"),
-  },
-  {
-    id: "input.blocked_keywords",
-    label: "Blocked keywords",
-    group: "Input",
-    resolve: (events) => subCheck(events, "input_validation", "blocked_keywords"),
-  },
-  {
-    id: "input.pii_masking",
-    label: "PII detection & masking",
-    group: "Input",
-    resolve: (events) => subCheck(events, "input_validation", "pii_masking"),
-  },
-  {
-    id: "quota_check",
-    label: "Daily token quota",
-    group: "Quota",
-    resolve: (events) => stageCheck(events, "quota_check"),
-  },
-  {
-    id: "model_input_validation",
-    label: "Model safety classifier",
-    group: "Model (input)",
-    resolve: (events) => stageCheck(events, "model_input_validation"),
-  },
-  {
-    id: "intent_output_schema",
-    label: "Response schema valid",
-    group: "Model (input)",
-    resolve: (events) => stageCheck(events, "intent_output_schema"),
-  },
-  {
-    id: "model_prompt_injection_check",
-    label: "Prompt injection (model judgment)",
-    group: "Model (input)",
-    resolve: (events) => stageCheck(events, "model_prompt_injection_check"),
-  },
-  {
-    id: "intent_detection",
-    label: "Intent detected",
-    group: "Intent",
-    resolve: (events) => stageCheck(events, "intent_detection"),
-  },
-  {
-    id: "collection_authorization",
-    label: "Collection authorized",
-    group: "Routing",
-    resolve: (events) => stageCheck(events, "collection_authorization"),
-  },
-  {
-    id: "semantic_cache",
-    label: "Similar question cache",
-    group: "Cache",
-    resolve: (events) => stageCheck(events, "semantic_cache"),
-  },
-  {
-    id: "retrieval_validation",
-    label: "Retrieval relevance",
-    group: "Retrieval",
-    resolve: (events) => stageCheck(events, "retrieval_validation"),
-  },
-  {
-    id: "context_budget",
-    label: "Context budget",
-    group: "Retrieval",
-    resolve: (events) => stageCheck(events, "context_budget"),
-  },
-  {
-    id: "model_output_validation",
-    label: "Model safety classifier",
-    group: "Model (output)",
-    resolve: (events) => stageCheck(events, "model_output_validation"),
-  },
-  {
-    id: "model_output_schema",
-    label: "Response schema valid",
-    group: "Model (output)",
-    resolve: (events) => stageCheck(events, "model_output_schema"),
-  },
-  {
-    id: "groundedness_check",
-    label: "Grounded in retrieved context",
-    group: "Answer quality",
-    resolve: (events) => stageCheck(events, "groundedness_check"),
-  },
-  {
-    id: "output.not_empty",
-    label: "Answer not empty",
-    group: "Output",
-    resolve: (events) => subCheck(events, "output_validation", "not_empty"),
-  },
-  {
-    id: "output.blocked_keywords",
-    label: "Blocked keywords",
-    group: "Output",
-    resolve: (events) => subCheck(events, "output_validation", "blocked_keywords"),
-  },
-  {
-    id: "output.pii_masking",
-    label: "PII detection & masking",
-    group: "Output",
-    resolve: (events) => subCheck(events, "output_validation", "pii_masking"),
-  },
-  {
-    id: "output.url_allowlist",
-    label: "Link allowlist",
-    group: "Output",
-    resolve: (events) => subCheck(events, "output_validation", "url_allowlist"),
-  },
-  {
-    id: "output.length_limit",
-    label: "Answer length limit",
-    group: "Output",
-    resolve: (events) => subCheck(events, "output_validation", "length_limit"),
-  },
-];
-
-function firstEventForStage(events, stage) {
-  return (events || []).find((e) => e.stage === stage);
-}
-
-function stageCheck(events, stage) {
-  const event = firstEventForStage(events, stage);
-  if (!event) return { status: "not_run" };
-  return {
-    status: event.passed ? "pass" : "fail",
-    reason: event.reason,
-    flaggedCategories: event.flagged_categories,
-    intent: event.intent,
-    confidence: event.confidence,
-    tokensUsedToday: event.tokens_used_today,
-    dailyQuota: event.daily_quota,
-    groundednessScore: event.score,
-    cacheHit: event.cache_hit,
-    cacheSimilarity: event.similarity,
-    matchedQuestion: event.matched_question,
-  };
-}
-
-function subCheck(events, stage, checkId) {
-  const event = firstEventForStage(events, stage);
-  const entry = event?.checks?.find((c) => c.check === checkId);
-  if (!entry) return { status: "not_run" };
-  if (entry.passed === null) return { status: "skipped", reason: entry.reason };
-  return {
-    status: entry.passed ? "pass" : "fail",
-    reason: entry.reason,
-    piiDetected: entry.pii_detected,
-  };
 }
 
 const STATUS_META = {
@@ -277,16 +111,7 @@ function GuardrailRow({ item, events }) {
 
 export default function GuardrailPanel({ logs, graphResponse }) {
   const events = graphResponse?.guardrail_events || [];
-
-  const groups = [];
-  for (const item of CHECKLIST) {
-    let group = groups.find((g) => g.name === item.group);
-    if (!group) {
-      group = { name: item.group, items: [] };
-      groups.push(group);
-    }
-    group.items.push(item);
-  }
+  const groups = groupChecklist(GUARDRAIL_CHECKLIST);
 
   return (
     <div className="chat-logs">

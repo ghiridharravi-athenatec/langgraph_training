@@ -4,12 +4,44 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import api, { formatErrorDetail } from "../api/client";
 import GuardrailPanel from "../components/GuardrailPanel";
+import DocumentsPanel from "../components/DocumentsPanel";
+import { TracingTab } from "./Traces";
 import { useAuth } from "../context/AuthContext";
+import { formatResponseTime } from "../utils/formatResponseTime";
+import { formatPiiTokens } from "../utils/formatPii";
 
-const COLLECTIONS = ["warranty", "user_manual", "inspection_report"];
+const SECTIONS = [
+  { id: "chat", label: "Chat", icon: "◧" },
+  { id: "ingest", label: "Document Ingestion", icon: "▤" },
+  { id: "documents", label: "Documents", icon: "▦" },
+  { id: "tracing", label: "Tracing", icon: "≋" },
+];
+
+// Human-readable labels for the entity type names GET /ingest/pii-options returns -
+// same catalog as PII_ENTITY_OPTIONS on the Guardrails page, kept separate since
+// this component doesn't import from Traces.jsx.
+const PII_ENTITY_LABELS = {
+  EMAIL_ADDRESS: "Email address",
+  PHONE_NUMBER: "Phone number",
+  CREDIT_CARD: "Credit card",
+  US_SSN: "SSN",
+  US_BANK_NUMBER: "Bank account number",
+  US_DRIVER_LICENSE: "Driver's license",
+  US_PASSPORT: "Passport number",
+  IBAN_CODE: "IBAN",
+  IP_ADDRESS: "IP address",
+  CRYPTO: "Crypto wallet address",
+  PERSON: "Person name",
+  LOCATION: "Location",
+  NRP: "Nationality / religious / political group",
+  MEDICAL_LICENSE: "Medical license",
+};
 
 export default function RagChatbot() {
   const { user, logout } = useAuth();
+
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [activeSection, setActiveSection] = useState("chat");
 
   const [conversations, setConversations] = useState([]);
   const [activeConversationId, setActiveConversationId] = useState(null);
@@ -20,15 +52,13 @@ export default function RagChatbot() {
   const [sending, setSending] = useState(false);
   const [openLogsIndex, setOpenLogsIndex] = useState(null);
 
-  const [documentsOpen, setDocumentsOpen] = useState(false);
-  const [ingestCollection, setIngestCollection] = useState(COLLECTIONS[0]);
   const [file, setFile] = useState(null);
   const [ingestStatus, setIngestStatus] = useState(null);
   const [ingesting, setIngesting] = useState(false);
+  const [piiOptions, setPiiOptions] = useState([]);
+  const [selectedPiiEntities, setSelectedPiiEntities] = useState([]);
 
-  const [manageCollection, setManageCollection] = useState(COLLECTIONS[0]);
-  const [manageStatus, setManageStatus] = useState(null);
-  const [managing, setManaging] = useState(false);
+  const [hasDocuments, setHasDocuments] = useState(null); // null = not checked yet, so the banner never flashes
 
   const scrollRef = useRef(null);
 
@@ -38,7 +68,33 @@ export default function RagChatbot() {
 
   useEffect(() => {
     loadConversations({ selectFirst: true });
+    checkDocumentsStatus();
+    loadPiiOptions();
   }, []);
+
+  async function loadPiiOptions() {
+    try {
+      const { data } = await api.get("/ingest/pii-options");
+      const options = data.available_entities.map((value) => ({
+        value,
+        label: PII_ENTITY_LABELS[value] || value,
+      }));
+      setPiiOptions(options);
+      setSelectedPiiEntities(data.default_entities || []);
+    } catch {
+      // Non-critical - the checklist just won't be editable this session; the
+      // backend still falls back to its own default entity list on upload.
+    }
+  }
+
+  async function checkDocumentsStatus() {
+    try {
+      const { data } = await api.get("/documents/status");
+      setHasDocuments(data.has_documents);
+    } catch {
+      // Non-critical - worst case the disclaimer just doesn't show for this session.
+    }
+  }
 
   async function loadConversations({ selectFirst = false } = {}) {
     setConversationsLoading(true);
@@ -68,6 +124,7 @@ export default function RagChatbot() {
           logs: m.logs,
           graph_response: m.graph_response,
           cached: m.cached,
+          response_time_ms: m.response_time_ms,
         }))
       );
     } catch {
@@ -113,6 +170,7 @@ export default function RagChatbot() {
           logs: data.logs,
           graph_response: data.graph_response,
           cached: data.graph_response?.guardrail_events?.some((ev) => ev.stage === "semantic_cache" && ev.cache_hit),
+          response_time_ms: data.response_time_ms,
         },
       ]);
       if (data.conversation_id && data.conversation_id !== activeConversationId) {
@@ -137,9 +195,11 @@ export default function RagChatbot() {
     try {
       const form = new FormData();
       form.append("file", file);
-      const { data } = await api.post("/ingest", form, { params: { collection_name: ingestCollection } });
-      setIngestStatus({ ok: true, message: `Ingested into '${ingestCollection}'.`, guardrails: data.guardrails });
+      form.append("pii_entities", JSON.stringify(selectedPiiEntities));
+      const { data } = await api.post("/ingest", form);
+      setIngestStatus({ ok: true, message: `Ingested '${file.name}'.`, guardrails: data.guardrails });
       setFile(null);
+      checkDocumentsStatus();
     } catch (err) {
       setIngestStatus({ ok: false, message: formatErrorDetail(err, "Ingestion failed.") });
     } finally {
@@ -147,93 +207,202 @@ export default function RagChatbot() {
     }
   }
 
-  async function handleClear() {
-    setManaging(true);
-    setManageStatus(null);
-    try {
-      const { data } = await api.delete(`/clear/${manageCollection}`);
-      setManageStatus({ ok: true, message: data.message || "Cleared." });
-    } catch (err) {
-      setManageStatus({ ok: false, message: formatErrorDetail(err, "Failed to clear.") });
-    } finally {
-      setManaging(false);
-    }
-  }
-
-  async function handleDelete() {
-    setManaging(true);
-    setManageStatus(null);
-    try {
-      const { data } = await api.delete(`/delete/${manageCollection}`);
-      setManageStatus({ ok: true, message: data.message || "Deleted." });
-    } catch (err) {
-      setManageStatus({ ok: false, message: formatErrorDetail(err, "Failed to delete.") });
-    } finally {
-      setManaging(false);
-    }
-  }
-
   return (
     <div className="chat-shell">
-      <aside className="chat-sidebar">
-        <Link to="/" className="brand brand-sidebar">
-          <span className="brand-mark">✦</span>
-          <span>AI Assistance</span>
-        </Link>
-
-        <button className="btn-new-chat" onClick={startNewChat}>
-          <span>+</span> New chat
-        </button>
-
-        <div className="conversation-list">
-          {conversationsLoading && <p className="muted conversation-list-empty">Loading…</p>}
-          {!conversationsLoading && conversations.length === 0 && (
-            <p className="muted conversation-list-empty">No conversations yet</p>
-          )}
-          {conversations.map((c) => (
-            <div
-              key={c.id}
-              className={`conversation-item ${c.id === activeConversationId ? "conversation-item-active" : ""}`}
-              onClick={() => openConversation(c.id)}
-            >
-              <span className="conversation-item-title">{c.title}</span>
-              <button
-                className="conversation-item-delete"
-                title="Delete conversation"
-                onClick={(e) => deleteConversationById(e, c.id)}
-              >
-                ×
-              </button>
-            </div>
-          ))}
+      <aside className={`chat-nav ${sidebarOpen ? "" : "chat-nav-collapsed"}`}>
+        <div className="chat-nav-top">
+          <Link to="/" className="chat-nav-brand" title="Back to Projects">
+            <span className="brand-mark">✦</span>
+            {sidebarOpen && <span>AI Assistance</span>}
+          </Link>
+          <button
+            type="button"
+            className="chat-nav-toggle"
+            onClick={() => setSidebarOpen((v) => !v)}
+            title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
+          >
+            {sidebarOpen ? "‹" : "›"}
+          </button>
         </div>
 
-        <div className="sidebar-accordion">
-          <button className="sidebar-accordion-toggle" onClick={() => setDocumentsOpen((v) => !v)}>
-            <span>Documents</span>
-            <span className={`accordion-chevron ${documentsOpen ? "accordion-chevron-open" : ""}`}>▾</span>
-          </button>
+        <nav className="chat-nav-list">
+          {SECTIONS.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              className={`chat-nav-item ${activeSection === s.id ? "chat-nav-item-active" : ""}`}
+              onClick={() => setActiveSection(s.id)}
+              title={s.label}
+            >
+              <span className="chat-nav-icon">{s.icon}</span>
+              {sidebarOpen && <span>{s.label}</span>}
+            </button>
+          ))}
+        </nav>
 
-          {documentsOpen && (
-            <div className="sidebar-accordion-body">
-              <div className="sidebar-section">
+        <div className="chat-nav-footer">
+          {sidebarOpen && <span className="account-email">{user?.email}</span>}
+          <button className="btn-ghost" onClick={logout} title="Log out">
+            {sidebarOpen ? "Log out" : "⎋"}
+          </button>
+        </div>
+      </aside>
+
+      <main className="chat-nav-main">
+        {activeSection === "chat" && (
+          <div className="chat-section">
+            <aside className="chat-conversations-rail">
+              <button className="btn-new-chat" onClick={startNewChat}>
+                <span>+</span> New chat
+              </button>
+
+              <div className="conversation-list">
+                {conversationsLoading && <p className="muted conversation-list-empty">Loading…</p>}
+                {!conversationsLoading && conversations.length === 0 && (
+                  <p className="muted conversation-list-empty">No conversations yet</p>
+                )}
+                {conversations.map((c) => (
+                  <div
+                    key={c.id}
+                    className={`conversation-item ${c.id === activeConversationId ? "conversation-item-active" : ""}`}
+                    onClick={() => openConversation(c.id)}
+                  >
+                    <span className="conversation-item-title">{c.title}</span>
+                    <button
+                      className="conversation-item-delete"
+                      title="Delete conversation"
+                      onClick={(e) => deleteConversationById(e, c.id)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </aside>
+
+            <div className="chat-main">
+              <div className="chat-scroll" ref={scrollRef}>
+                <div className="chat-column">
+                  {hasDocuments === false && (
+                    <div className="chat-disclaimer">
+                      You haven't ingested any documents yet — answers won't have anything to draw on. Upload one
+                      from the <strong>Document Ingestion</strong> tab first.
+                    </div>
+                  )}
+
+                  {messages.length === 0 && (
+                    <div className="chat-empty">
+                      <div className="chat-empty-mark">✦</div>
+                      <h2>Ask a question about your documents</h2>
+                      <p className="muted">Answers are grounded in the documents you've ingested.</p>
+                    </div>
+                  )}
+
+                  {messages.map((msg, i) => (
+                    <div key={i} className={`chat-message chat-message-${msg.role}`}>
+                      <div className="chat-bubble">
+                        {msg.role === "assistant" ? (
+                          <div className="markdown-body">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatPiiTokens(msg.content)}</ReactMarkdown>
+                          </div>
+                        ) : (
+                          <p>{msg.content}</p>
+                        )}
+                      </div>
+                      {/* {msg.role === "assistant" && msg.cached && (
+                        <span className="cache-indicator">↺ Reused from a similar question</span>
+                      )}
+                      {(msg.logs?.length || msg.graph_response) && (
+                        <button className="chat-logs-toggle" onClick={() => setOpenLogsIndex(openLogsIndex === i ? null : i)}>
+                          {openLogsIndex === i ? "Hide logs" : "View logs"}
+                        </button>
+                      )} */}
+                      {msg.role === "assistant" && msg.response_time_ms != null && (
+                        <span className="chat-response-time" title="Time to generate this answer">
+                          {formatResponseTime(msg.response_time_ms)}
+                        </span>
+                      )}
+                      {openLogsIndex === i && <GuardrailPanel logs={msg.logs} graphResponse={msg.graph_response} />}
+                    </div>
+                  ))}
+
+                  {sending && (
+                    <div className="chat-message chat-message-assistant">
+                      <div className="chat-bubble chat-bubble-typing">
+                        <span className="typing-dot" />
+                        <span className="typing-dot" />
+                        <span className="typing-dot" />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <form onSubmit={handleSend} className="chat-input-bar">
+                <div className="chat-input-column">
+                  <input
+                    type="text"
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    placeholder={
+                      hasDocuments === false
+                        ? "Ingest a document before you can ask a question…"
+                        : "Ask a question about your documents…"
+                    }
+                    disabled={sending || hasDocuments === false}
+                  />
+                  <button type="submit" className="btn-primary" disabled={sending || hasDocuments === false || !input.trim()}>
+                    Send
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {activeSection === "ingest" && (
+          <div className="traces-page">
+            <div className="traces-page-header">
+              <h1>Document Ingestion</h1>
+              <p className="muted">Upload any document - PDF, XLSX, DOCX, or TXT. Only you can retrieve from what you upload.</p>
+            </div>
+
+            <div className="ingest-cards">
+              <div className="ingest-card sidebar-section">
                 <h3>Upload document</h3>
-                <label className="field">
-                  <span className="field-label">Collection</span>
-                  <select value={ingestCollection} onChange={(e) => setIngestCollection(e.target.value)}>
-                    {COLLECTIONS.map((c) => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ))}
-                  </select>
-                </label>
                 <form onSubmit={handleIngest} className="sidebar-form">
                   <input
                     type="file"
-                    accept=".pdf,.xlsx"
+                    accept=".pdf,.xlsx,.docx,.txt"
                     onChange={(e) => setFile(e.target.files?.[0] || null)}
                   />
+
+                  {piiOptions.length > 0 && (
+                    <div className="gr-field">
+                      <span className="field-label">PII to mask before storing</span>
+                      <div className="gr-checkboxes">
+                        {piiOptions.map((opt) => (
+                          <label key={opt.value} className="gr-checkbox-row">
+                            <input
+                              type="checkbox"
+                              checked={selectedPiiEntities.includes(opt.value)}
+                              disabled={ingesting}
+                              onChange={(e) =>
+                                setSelectedPiiEntities((prev) =>
+                                  e.target.checked ? [...prev, opt.value] : prev.filter((v) => v !== opt.value)
+                                )
+                              }
+                            />
+                            {opt.label}
+                          </label>
+                        ))}
+                      </div>
+                      <span className="gr-field-hint">
+                        Unchecked types are stored as-is. This choice only applies to this upload.
+                      </span>
+                    </div>
+                  )}
+
                   <button type="submit" className="btn-secondary btn-block" disabled={!file || ingesting}>
                     {ingesting ? "Ingesting…" : "Ingest document"}
                   </button>
@@ -261,107 +430,13 @@ export default function RagChatbot() {
                   </div>
                 )}
               </div>
-
-              <div className="sidebar-section">
-                <h3>Manage collections</h3>
-                <label className="field">
-                  <span className="field-label">Collection</span>
-                  <select value={manageCollection} onChange={(e) => setManageCollection(e.target.value)}>
-                    {COLLECTIONS.map((c) => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <div className="sidebar-form-row">
-                  <button className="btn-secondary" onClick={handleClear} disabled={managing}>
-                    Clear
-                  </button>
-                  <button className="btn-danger" onClick={handleDelete} disabled={managing}>
-                    Delete
-                  </button>
-                </div>
-                {manageStatus && (
-                  <p className={manageStatus.ok ? "sidebar-status-ok" : "sidebar-status-error"}>{manageStatus.message}</p>
-                )}
-              </div>
             </div>
-          )}
-        </div>
-
-        <div className="sidebar-footer">
-          <span className="account-email">{user?.email}</span>
-          <button className="btn-ghost" onClick={logout}>
-            Log out
-          </button>
-        </div>
-      </aside>
-
-      <main className="chat-main">
-        <header className="chat-topbar">
-          <h1>RAG Chatbot</h1>
-        </header>
-
-        <div className="chat-scroll" ref={scrollRef}>
-          <div className="chat-column">
-            {messages.length === 0 && (
-              <div className="chat-empty">
-                <div className="chat-empty-mark">✦</div>
-                <h2>Ask a question about your documents</h2>
-                <p className="muted">Answers are grounded in warranty, user manual, and inspection report content.</p>
-              </div>
-            )}
-
-            {messages.map((msg, i) => (
-              <div key={i} className={`chat-message chat-message-${msg.role}`}>
-                <div className="chat-bubble">
-                  {msg.role === "assistant" ? (
-                    <div className="markdown-body">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
-                    </div>
-                  ) : (
-                    <p>{msg.content}</p>
-                  )}
-                </div>
-                {msg.role === "assistant" && msg.cached && (
-                  <span className="cache-indicator">↺ Reused from a similar question</span>
-                )}
-                {(msg.logs?.length || msg.graph_response) && (
-                  <button className="chat-logs-toggle" onClick={() => setOpenLogsIndex(openLogsIndex === i ? null : i)}>
-                    {openLogsIndex === i ? "Hide logs" : "View logs"}
-                  </button>
-                )}
-                {openLogsIndex === i && <GuardrailPanel logs={msg.logs} graphResponse={msg.graph_response} />}
-              </div>
-            ))}
-
-            {sending && (
-              <div className="chat-message chat-message-assistant">
-                <div className="chat-bubble chat-bubble-typing">
-                  <span className="typing-dot" />
-                  <span className="typing-dot" />
-                  <span className="typing-dot" />
-                </div>
-              </div>
-            )}
           </div>
-        </div>
+        )}
 
-        <form onSubmit={handleSend} className="chat-input-bar">
-          <div className="chat-input-column">
-            <input
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Ask a question about your documents…"
-              disabled={sending}
-            />
-            <button type="submit" className="btn-primary" disabled={sending || !input.trim()}>
-              Send
-            </button>
-          </div>
-        </form>
+        {activeSection === "documents" && <DocumentsPanel />}
+
+        {activeSection === "tracing" && <TracingTab />}
       </main>
     </div>
   );

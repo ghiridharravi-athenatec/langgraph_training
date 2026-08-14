@@ -23,4 +23,5 @@ class MessageOut(BaseModel):
     graph_response: Optional[Any] = None
     cached: Optional[bool] = None
     blocked: Optional[bool] = None
+    response_time_ms: Optional[float] = None
     created_at: datetime

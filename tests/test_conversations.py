@@ -1,4 +1,4 @@
-from tests.conftest import signup
+from tests.conftest import seed_document, signup
 
 
 def _grant_ragchatbot(client, admin_headers, user_id):
@@ -79,11 +79,12 @@ def test_conversations_require_ragchatbot_permission(client, user_headers):
     assert resp.status_code == 403
 
 
-def test_chat_auto_creates_conversation_and_persists_history(client, admin_headers, monkeypatch):
+def test_chat_auto_creates_conversation_and_persists_history(client, admin_headers, admin_id, monkeypatch):
     monkeypatch.setattr(
         "app.api.v1.api.IntentClassifier.classify_intent",
         lambda self, question: {"intent": "greetings", "confidence": 0.99, "guardrail_events": []},
     )
+    seed_document(admin_id)
     resp = client.post("/api/v1/chat", json={"question": "hello there"}, headers=admin_headers)
     assert resp.status_code == 200
     returned_conversation_id = resp.json()["conversation_id"]
@@ -101,11 +102,12 @@ def test_chat_auto_creates_conversation_and_persists_history(client, admin_heade
     assert messages[1]["role"] == "assistant"
 
 
-def test_chat_with_explicit_conversation_id_reuses_it(client, admin_headers, monkeypatch):
+def test_chat_with_explicit_conversation_id_reuses_it(client, admin_headers, admin_id, monkeypatch):
     monkeypatch.setattr(
         "app.api.v1.api.IntentClassifier.classify_intent",
         lambda self, question: {"intent": "greetings", "confidence": 0.99, "guardrail_events": []},
     )
+    seed_document(admin_id)
     conversation_id = client.post("/api/v1/conversations", headers=admin_headers).json()["id"]
 
     client.post("/api/v1/chat", json={"question": "hi", "conversation_id": conversation_id}, headers=admin_headers)

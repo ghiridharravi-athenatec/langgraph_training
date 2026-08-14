@@ -1,35 +1,42 @@
+import asyncio
 import concurrent.futures
+import json
+import time
 from datetime import date
+from typing import Optional
 from fastapi import FastAPI, APIRouter, Depends
-from fastapi import UploadFile, File, HTTPException
+from fastapi import UploadFile, File, Form, HTTPException
 from pathlib import Path
 import uuid, os
 from app.utils.mongo import (
-    ROLE_ADMIN,
     add_message,
-    clear_collection,
     create_conversation,
-    delete_collection,
+    create_document_record,
     get_conversation,
     get_daily_usage,
     increment_usage,
     touch_conversation,
+    user_has_documents,
 )
 from app.schemas.retrieval_schema import QAResponse
 from app.utils.llm import IntentClassifier
 from dotenv import load_dotenv
-from app.utils.retrieve import compiled_graph, embedding_model
-from app.core import config
+from app.utils.retrieve import compiled_graph, embedding_model, invalidate_bm25_cache
+from app.core import config, guardrail_config
 from app.core.logger import get_logger
-from app.core.guardrails import validate_input, evaluate_intent_detection, validate_collection_authorization, validate_quota
+from app.core.guardrails import validate_input, validate_has_documents, evaluate_intent_detection, validate_quota
 from app.core.ingest_guardrails import validate_file_size, validate_file_type
+from app.schemas.guardrail_config_schema import KNOWN_PII_ENTITIES
 from app.core.rate_limit import rate_limit
 from app.core.security import require_project_access
 from app.core.semantic_cache import find_cache_match
 from app.api.v1.auth import router as auth_router
 from app.api.v1.admin import router as admin_router
 from app.api.v1.conversations import router as conversations_router
+from app.api.v1.documents import router as documents_router
 from app.api.v1.projects import router as projects_router
+from app.api.v1.traces import router as traces_router
+from app.api.v1.guardrail_settings import router as guardrail_settings_router
 
 router = APIRouter()
 load_dotenv()
@@ -38,7 +45,10 @@ logger = get_logger(__name__)
 router.include_router(auth_router)
 router.include_router(admin_router)
 router.include_router(conversations_router)
+router.include_router(documents_router)
 router.include_router(projects_router)
+router.include_router(traces_router)
+router.include_router(guardrail_settings_router)
 
 app = FastAPI(title="My FastAPI App")
 absolute_path = os.path.abspath(".")
@@ -57,32 +67,52 @@ _ingest_rate_limit = rate_limit("ingest", config.INGEST_RATE_LIMIT, config.RATE_
 _pipeline_executor = concurrent.futures.ThreadPoolExecutor(max_workers=8)
 
 
-def _run_with_timeout(fn, *args, stage: str, timeout_seconds: int = config.REQUEST_TIMEOUT_SECONDS, **kwargs):
+async def _run_with_timeout(fn, *args, stage: str, timeout_seconds: int = config.REQUEST_TIMEOUT_SECONDS, **kwargs):
+    '''Runs a blocking call on the pipeline thread pool and awaits it - not
+    future.result(), which would block this coroutine's event loop thread for the
+    entire duration and freeze every other in-flight request on this worker (logins,
+    conversation list refreshes, other users' chats) until this one finishes.'''
     future = _pipeline_executor.submit(fn, *args, **kwargs)
     try:
-        return future.result(timeout=timeout_seconds), None
-    except concurrent.futures.TimeoutError:
+        result = await asyncio.wait_for(asyncio.wrap_future(future), timeout=timeout_seconds)
+        return result, None
+    except asyncio.TimeoutError:
         reason = f"'{stage}' took longer than {timeout_seconds}s and was aborted."
         logger.warning("Guardrail blocked at timeout (%s): %s", stage, reason)
         return None, {"stage": "timeout", "passed": False, "reason": reason, "timed_out_stage": stage}
 
 
+@router.get("/ingest/pii-options")
+def get_ingest_pii_options(current_user: dict = Depends(_require_ragchatbot_access)):
+    '''Powers the PII checklist on the Document Ingestion upload screen - every user
+    picks their own entity list for their own upload here, separate from the
+    admin-only input/output PII settings on the Guardrails page.'''
+    cfg = guardrail_config.get_config()
+    return {
+        "available_entities": sorted(KNOWN_PII_ENTITIES),
+        "default_entities": cfg["ingest_pii_entities"],
+    }
+
+
 @router.post("/ingest")
 async def ingest(
     file: UploadFile = File(...),
-    collection_name: str = "warranty",
+    pii_entities: Optional[str] = Form(None),
     current_user: dict = Depends(_require_ragchatbot_access),
     _rate_limit_check: dict = Depends(_ingest_rate_limit),
 ):
     '''
-    Ingest a file (PDF or XLSX) into the specified mongodb collection. The file is saved in the uploads directory and then processed for ingestion.\n
-    Collection name must be one of: warranty, user_manual, inspection_report.
+    Ingest a document (PDF, XLSX, DOCX, or TXT) into the uploader's own knowledge base -
+    retrieval only ever draws from documents this same user has ingested, never anyone
+    else's. The file is saved in the uploads directory, chunked, PII-masked, and embedded
+    for retrieval; a record
+    of who uploaded it is kept for the Documents tab.
+
+    pii_entities is a JSON-encoded array of entity type names, chosen by the uploader on
+    the Document Ingestion screen (GET /ingest/pii-options lists the available ones) -
+    None/omitted falls back to guardrail_config's ingest_pii_entities default.
     '''
     try:
-        if collection_name not in ["warranty", "user_manual", "inspection_report"]:
-            logger.error("Invalid collection name provided: '%s'", collection_name)
-            raise HTTPException(status_code=400, detail="Invalid collection name. Must be one of: warranty, user_manual, inspection_report.")
-
         content_bytes = await file.read()
 
         file_size_check = validate_file_size(len(content_bytes))
@@ -92,6 +122,18 @@ async def ingest(
         file_type_check = validate_file_type(file.filename, content_bytes)
         if not file_type_check["passed"]:
             raise HTTPException(status_code=400, detail=file_type_check["reason"])
+
+        parsed_pii_entities = None
+        if pii_entities is not None:
+            try:
+                parsed_pii_entities = json.loads(pii_entities)
+            except (json.JSONDecodeError, TypeError):
+                raise HTTPException(status_code=400, detail="pii_entities must be a JSON array of entity type names.")
+            if not isinstance(parsed_pii_entities, list) or not all(isinstance(e, str) for e in parsed_pii_entities):
+                raise HTTPException(status_code=400, detail="pii_entities must be a JSON array of entity type names.")
+            unknown = set(parsed_pii_entities) - KNOWN_PII_ENTITIES
+            if unknown:
+                raise HTTPException(status_code=400, detail=f"Unknown PII entity type(s): {', '.join(sorted(unknown))}")
 
         # Generate unique filename
         extension = Path(file.filename).suffix
@@ -103,12 +145,12 @@ async def ingest(
         logger.info("Saved uploaded file '%s' to '%s'", file.filename, file_path)
 
         from app.utils.ingest_files import ingest_files
-        ingest = ingest_files([str(file_path)], collection_name=collection_name)
+        ingest = ingest_files([str(file_path)], user_id=current_user["_id"], pii_entities=parsed_pii_entities)
 
         if ingest["passed"]:
-            logger.info("Ingestion succeeded for '%s' into collection '%s'", file.filename, collection_name)
+            logger.info("Ingestion succeeded for '%s'", file.filename)
         else:
-            logger.error("Ingestion failed for '%s' into collection '%s': %s", file.filename, collection_name, ingest["error"])
+            logger.error("Ingestion failed for '%s': %s", file.filename, ingest["error"])
 
         guardrails = {
             "file_type": file_type_check,
@@ -116,23 +158,34 @@ async def ingest(
             "pii_masking": ingest.get("pii_event"),
         }
 
+        if not ingest["passed"]:
+            return {
+                "message": ingest["error"],
+                "original_filename": file.filename,
+                "content_type": file.content_type,
+                "size": len(content_bytes),
+                "guardrails": guardrails,
+            }
+
+        document = create_document_record(
+            user_id=current_user["_id"],
+            filename=file.filename,
+            content_type=extension.lstrip(".").lower() or "unknown",
+            size_bytes=len(content_bytes),
+            extracted_text=ingest["extracted_text"],
+            chunk_count=ingest["chunk_count"],
+        )
+        invalidate_bm25_cache(current_user["_id"])
+
         return {
             "message": ingest["message"],
+            "document_id": document["_id"],
             "original_filename": file.filename,
-            "saved_filename": filename,
             "content_type": file.content_type,
             "size": len(content_bytes),
-            "path": str(file_path),
+            "chunk_count": ingest["chunk_count"],
             "guardrails": guardrails,
-        } if ingest["passed"] else {
-            "message": ingest["error"],
-            "original_filename": file.filename,
-            "saved_filename": filename,
-            "content_type": file.content_type,
-            "size": len(content_bytes),
-            "path": str(file_path),
-            "guardrails": guardrails,
-            }
+        }
 
     except HTTPException:
         raise
@@ -146,7 +199,6 @@ def _build_graph_response(state: QAResponse, compile: dict = None, extra_guardra
     '''Full RAGState schema, guaranteed present regardless of which nodes ran.'''
     compile = compile or {}
     return {
-        "collection_name": compile.get("collection_name", state.collection_name),
         "question": compile.get("question", state.question),
         "retrieved_chunks": compile.get("retrieved_chunks", []),
         "reranked_chunks": compile.get("reranked_chunks", []),
@@ -165,18 +217,21 @@ def _persist_turn(
     question: str,
     response: dict,
     blocked: bool,
+    start_time: float,
     cached: bool = False,
-    collection_name: str = None,
     question_embedding: list = None,
     cache_similarity: float = None,
     cache_source_message_id: str = None,
 ) -> None:
     '''Saves both sides of a turn and bumps the conversation's recency/title. question_embedding is
     only ever passed for a fresh, successful, non-cached answer - that's what makes a message a
-    future cache candidate (see mongo.list_cache_candidates). Also stamps conversation_id onto the
-    response dict in place, so the caller (which may have auto-created this conversation) always
-    tells the frontend which conversation the turn landed in.'''
+    future cache candidate (see mongo.list_cache_candidates). Also stamps conversation_id and
+    response_time_ms onto the response dict in place, so the caller (which may have auto-created
+    this conversation) always tells the frontend which conversation the turn landed in and how long
+    it took - measured from request receipt, so it covers every guardrail stage, not just the LLM call.'''
+    response_time_ms = round((time.perf_counter() - start_time) * 1000, 1)
     response["conversation_id"] = conversation_id
+    response["response_time_ms"] = response_time_ms
     add_message(conversation_id, user_id, "user", question)
     add_message(
         conversation_id, user_id, "assistant", response.get("answer", ""),
@@ -185,10 +240,10 @@ def _persist_turn(
         graph_response=response.get("graph_response"),
         blocked=blocked,
         cached=cached,
-        collection_name=collection_name,
         question_embedding=question_embedding,
         cache_similarity=cache_similarity,
         cache_source_message_id=cache_source_message_id,
+        response_time_ms=response_time_ms,
     )
     touch_conversation(conversation_id, first_question=question)
 
@@ -199,9 +254,13 @@ async def chat_with_document(
     current_user: dict = Depends(_require_ragchatbot_access),
     _rate_limit_check: dict = Depends(_chat_rate_limit),
 ):
+    start = time.perf_counter()
     try:
         logger.info("Received chat request: question=%r", state.question)
         original_question = state.question
+        # Overwrite unconditionally - a client-supplied user_id could otherwise be used
+        # to read another user's ingested documents through retrieval's pre_filter.
+        state.user_id = current_user["_id"]
 
         if state.conversation_id:
             conversation = get_conversation(state.conversation_id)
@@ -220,39 +279,61 @@ async def chat_with_document(
                 "logs": [f"[guardrail:input_validation] BLOCKED - {input_check['reason']}"],
                 "graph_response": _build_graph_response(state, extra_guardrail_events=[input_check]),
             }
-            _persist_turn(conversation_id, current_user["_id"], original_question, response, blocked=True)
+            _persist_turn(conversation_id, current_user["_id"], original_question, response, blocked=True, start_time=start)
             return response
         state.question = input_check["sanitized_question"]
 
+        # Independent Mongo reads - awaited concurrently (asyncio.to_thread, not a
+        # blocking ThreadPoolExecutor.result() call) so this coroutine doesn't freeze
+        # the event loop - and hence every other in-flight request on this worker -
+        # while waiting on either one.
         today = date.today().isoformat()
-        quota_event = validate_quota(
-            get_daily_usage(current_user["_id"], today), current_user.get("role") == ROLE_ADMIN
+        has_documents, daily_usage = await asyncio.gather(
+            asyncio.to_thread(user_has_documents, current_user["_id"]),
+            asyncio.to_thread(get_daily_usage, current_user["_id"], today),
         )
+
+        documents_event = validate_has_documents(has_documents)
+        if not documents_event["passed"]:
+            logger.warning("Chat request blocked by knowledge base guardrail: %s", documents_event["reason"])
+            response = {
+                "message": "Request blocked by knowledge base check",
+                "answer": "You haven't ingested any documents yet. Upload one from the Document Ingestion tab before asking a question.",
+                "logs": [f"[guardrail:documents_check] BLOCKED - {documents_event['reason']}"],
+                "graph_response": _build_graph_response(state, extra_guardrail_events=[input_check, documents_event]),
+            }
+            _persist_turn(conversation_id, current_user["_id"], original_question, response, blocked=True, start_time=start)
+            return response
+
+        daily_quota = current_user.get("daily_token_quota")
+        if daily_quota is None:
+            daily_quota = guardrail_config.get_config()["daily_token_quota"]
+        quota_event = validate_quota(daily_usage, daily_quota)
         if not quota_event["passed"]:
             logger.warning("Chat request blocked by quota guardrail: %s", quota_event["reason"])
             response = {
                 "message": "Request blocked by quota",
                 "answer": f"I'm sorry, this request can't be processed: {quota_event['reason']}",
                 "logs": [f"[guardrail:quota_check] BLOCKED - {quota_event['reason']}"],
-                "graph_response": _build_graph_response(state, extra_guardrail_events=[input_check, quota_event]),
+                "graph_response": _build_graph_response(state, extra_guardrail_events=[input_check, documents_event, quota_event]),
             }
-            _persist_turn(conversation_id, current_user["_id"], original_question, response, blocked=True)
+            _persist_turn(conversation_id, current_user["_id"], original_question, response, blocked=True, start_time=start)
             return response
 
         classifier = IntentClassifier(api_key=API_KEY)
-        result, timeout_event = _run_with_timeout(classifier.classify_intent, state.question, stage="intent_classification")
+        result, timeout_event = await _run_with_timeout(classifier.classify_intent, state.question, stage="intent_classification")
         if timeout_event:
             response = {
                 "message": "Request timed out",
                 "answer": "I'm sorry, this request took too long to process. Please try again.",
                 "logs": [f"[guardrail:timeout] BLOCKED - {timeout_event['reason']}"],
-                "graph_response": _build_graph_response(state, extra_guardrail_events=[input_check, quota_event, timeout_event]),
+                "graph_response": _build_graph_response(state, extra_guardrail_events=[input_check, documents_event, quota_event, timeout_event]),
             }
-            _persist_turn(conversation_id, current_user["_id"], original_question, response, blocked=True)
+            _persist_turn(conversation_id, current_user["_id"], original_question, response, blocked=True, start_time=start)
             return response
         increment_usage(current_user["_id"], today, result.get("token_count", 0))
         model_events = result.get("guardrail_events", [])
-        guardrail_events = [input_check, quota_event] + model_events
+        guardrail_events = [input_check, documents_event, quota_event] + model_events
 
         blocked_event = next((e for e in model_events if not e["passed"]), None)
         if blocked_event:
@@ -263,7 +344,7 @@ async def chat_with_document(
                 "logs": [f"[guardrail:{blocked_event['stage']}] BLOCKED - {blocked_event['reason']}"],
                 "graph_response": _build_graph_response(state, extra_guardrail_events=guardrail_events),
             }
-            _persist_turn(conversation_id, current_user["_id"], original_question, response, blocked=True)
+            _persist_turn(conversation_id, current_user["_id"], original_question, response, blocked=True, start_time=start)
             return response
 
         logger.info("Intent classified as '%s' with confidence %.2f", result["intent"], result["confidence"])
@@ -274,38 +355,25 @@ async def chat_with_document(
             logger.warning("Chat request blocked by intent detection guardrail: %s", intent_event["reason"])
             response = {
                 "message": "Request blocked by intent detection",
-                "answer": "I'm sorry, I couldn't determine your intent. This application is designed to answer questions related to warranty, user manuals, and inspection reports. Please ask a question related to one of these topics.",
+                "answer": "I'm sorry, I couldn't confidently tell what you're asking. Could you rephrase your question?",
                 "logs": [f"[guardrail:intent_detection] BLOCKED - {intent_event['reason']}"],
                 "graph_response": _build_graph_response(state, extra_guardrail_events=guardrail_events),
             }
-            _persist_turn(conversation_id, current_user["_id"], original_question, response, blocked=True)
+            _persist_turn(conversation_id, current_user["_id"], original_question, response, blocked=True, start_time=start)
             return response
 
-        collection_name = result["intent"]
-        if collection_name == "greetings":
+        if result["intent"] == "greetings":
             logger.info("Responded with greeting message")
             response = {
                 "message": "Chat completed successfully",
-                "answer": "Hello! How can I assist you today? Please ask a question related to warranty, user manuals, or inspection reports.",
+                "answer": "Hello! How can I assist you today? Ask me a question about any of the documents you've uploaded.",
                 "logs": ["Intent classified as 'greetings'. Responded with a greeting message.", "Intent classification confidence: {:.2f}".format(result["confidence"])],
                 "graph_response": _build_graph_response(state, extra_guardrail_events=guardrail_events),
             }
-            _persist_turn(conversation_id, current_user["_id"], original_question, response, blocked=False)
-            return response
-        collection_event = validate_collection_authorization(collection_name)
-        guardrail_events = guardrail_events + [collection_event]
-        if not collection_event["passed"]:
-            logger.warning("Chat request blocked by collection authorization guardrail: %s", collection_event["reason"])
-            response = {
-                "message": "Request blocked by collection authorization",
-                "answer": "I'm sorry, I couldn't route this question to a valid document collection.",
-                "logs": [f"[guardrail:collection_authorization] BLOCKED - {collection_event['reason']}"],
-                "graph_response": _build_graph_response(state, extra_guardrail_events=guardrail_events),
-            }
-            _persist_turn(conversation_id, current_user["_id"], original_question, response, blocked=True)
+            _persist_turn(conversation_id, current_user["_id"], original_question, response, blocked=False, start_time=start)
             return response
 
-        cache_match, question_embedding = find_cache_match(current_user["_id"], collection_name, state.question, embedding_model)
+        cache_match, question_embedding = find_cache_match(current_user["_id"], state.question, embedding_model)
         cache_event = {
             "stage": "semantic_cache",
             "passed": True,
@@ -330,13 +398,13 @@ async def chat_with_document(
             }
             _persist_turn(
                 conversation_id, current_user["_id"], original_question, response, blocked=False, cached=True,
-                collection_name=collection_name, cache_similarity=cache_match["similarity"],
+                cache_similarity=cache_match["similarity"],
                 cache_source_message_id=cache_match["message_id"],
+                start_time=start,
             )
             return response
 
-        state.collection_name = collection_name
-        compile, timeout_event = _run_with_timeout(compiled_graph.invoke, state, stage="answer_generation")
+        compile, timeout_event = await _run_with_timeout(compiled_graph.invoke, state, stage="answer_generation")
         if timeout_event:
             response = {
                 "message": "Request timed out",
@@ -344,11 +412,11 @@ async def chat_with_document(
                 "logs": [f"[guardrail:timeout] BLOCKED - {timeout_event['reason']}"],
                 "graph_response": _build_graph_response(state, extra_guardrail_events=guardrail_events + [timeout_event]),
             }
-            _persist_turn(conversation_id, current_user["_id"], original_question, response, blocked=True)
+            _persist_turn(conversation_id, current_user["_id"], original_question, response, blocked=True, start_time=start)
             return response
         increment_usage(current_user["_id"], today, compile.get("token_count", 0))
         image_paths = [x["image_path"] for x in compile["retrieved_chunks"] if x["content_type"] == "pdf_image"]
-        logger.info("Chat completed successfully for collection '%s'", state.collection_name)
+        logger.info("Chat completed successfully")
 
         graph_response = _build_graph_response(state, compile, extra_guardrail_events=guardrail_events)
         logger.debug("Full LangGraph state: %s", graph_response)
@@ -363,35 +431,12 @@ async def chat_with_document(
         }
         _persist_turn(
             conversation_id, current_user["_id"], original_question, response, blocked=blocked, cached=False,
-            collection_name=collection_name if not blocked else None,
             question_embedding=question_embedding if not blocked else None,
+            start_time=start,
         )
         return response
     except HTTPException:
         raise
     except Exception as e:
         logger.exception("Error while handling chat request: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.delete("/clear/{collection_name}")
-def clear_mongo_collection(collection_name: str, current_user: dict = Depends(_require_ragchatbot_access)):
-    try:
-        logger.info("Clearing collection '%s'", collection_name)
-        result = clear_collection(collection_name)
-        logger.info("Collection '%s' cleared successfully", collection_name)
-        return result
-    except Exception as e:
-        logger.exception("Error while clearing collection '%s': %s", collection_name, e)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.delete("/delete/{collection_name}")
-def delete_mongo_collection(collection_name: str, current_user: dict = Depends(_require_ragchatbot_access)):
-    try:
-        logger.info("Deleting collection '%s'", collection_name)
-        result = delete_collection(collection_name)
-        logger.info("Collection '%s' deleted successfully", collection_name)
-        return result
-    except Exception as e:
-        logger.exception("Error while deleting collection '%s': %s", collection_name, e)
         raise HTTPException(status_code=500, detail=str(e))

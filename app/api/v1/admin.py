@@ -3,7 +3,7 @@ from pymongo.errors import DuplicateKeyError
 
 from app.core.logger import get_logger
 from app.core.security import require_admin
-from app.schemas.project_schema import AdminUserOut, PermissionsUpdate, ProjectCreate, ProjectOut
+from app.schemas.project_schema import AdminUserOut, PermissionsUpdate, ProjectCreate, ProjectOut, UserQuotaUpdate
 from app.utils.mongo import (
     create_project,
     get_user_by_id,
@@ -11,6 +11,7 @@ from app.utils.mongo import (
     list_projects,
     list_users,
     set_user_permissions,
+    set_user_quota,
 )
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
@@ -26,6 +27,7 @@ def get_all_users():
             email=user["email"],
             role=user["role"],
             projects=permissions_by_user.get(user["_id"], []),
+            daily_token_quota=user.get("daily_token_quota"),
         )
         for user in list_users()
     ]
@@ -72,3 +74,22 @@ def update_user_permissions(user_id: str, payload: PermissionsUpdate):
     set_user_permissions(user_id, payload.projects)
     logger.info("Admin updated permissions for %s -> %s", user["email"], payload.projects)
     return payload.projects
+
+
+@router.put("/users/{user_id}/quota", response_model=AdminUserOut)
+def update_user_quota(user_id: str, payload: UserQuotaUpdate):
+    user = get_user_by_id(user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    set_user_quota(user_id, payload.daily_token_quota)
+    logger.info("Admin set daily token quota for %s -> %s", user["email"], payload.daily_token_quota)
+
+    permissions_by_user = list_all_permissions()
+    return AdminUserOut(
+        id=user["_id"],
+        email=user["email"],
+        role=user["role"],
+        projects=permissions_by_user.get(user_id, []),
+        daily_token_quota=payload.daily_token_quota,
+    )

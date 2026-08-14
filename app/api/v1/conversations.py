@@ -58,6 +58,7 @@ def get_conversation_messages(conversation_id: str, current_user: dict = Depends
             graph_response=m.get("graph_response"),
             cached=m.get("cached"),
             blocked=m.get("blocked"),
+            response_time_ms=m.get("response_time_ms"),
             created_at=m["created_at"],
         )
         for m in list_messages(conversation_id)

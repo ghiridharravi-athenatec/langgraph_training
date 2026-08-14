@@ -137,7 +137,7 @@ def require_project_access(project_id: str):
         if not has_permission(current_user["_id"], project_id):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"You do not have access to project '{project_id}'",
+                detail=f"You do not have access to '{project.get('name', project_id)}'",
             )
 
         return current_user
