@@ -7,6 +7,7 @@ import Login from "./pages/Login";
 import Signup from "./pages/Signup";
 import Dashboard from "./pages/Dashboard";
 import ProjectView from "./pages/ProjectView";
+import Instructions from "./pages/Instructions";
 import AdminUsers from "./pages/AdminUsers";
 import Forbidden from "./pages/Forbidden";
 import NotFound from "./pages/NotFound";
@@ -20,6 +21,7 @@ export default function App() {
 
         <Route element={<ProtectedRoute />}>
           <Route path="/" element={<Dashboard />} />
+          <Route path="/instructions" element={<Instructions />} />
           <Route path="/forbidden" element={<Forbidden />} />
 
           <Route element={<ProjectRoute />}>

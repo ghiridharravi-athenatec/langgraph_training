@@ -19,6 +19,7 @@ export default function AppShell({ children, wide = false }) {
         </Link>
         <nav className="shell-nav">
           <Link to="/">Projects</Link>
+          <Link to="/instructions">Instructions</Link>
           {isAdmin && <Link to="/admin/users">Admin</Link>}
         </nav>
         <div className="shell-account">
