@@ -8,6 +8,12 @@ import axios from "axios";
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || "/api/v1",
   withCredentials: true,
+  headers: {
+    // No-op against a normal backend; skips ngrok's browser interstitial page
+    // when VITE_API_BASE_URL points at a free ngrok tunnel domain, which would
+    // otherwise return that page's HTML instead of the API's JSON.
+    "ngrok-skip-browser-warning": "true",
+  },
 });
 
 // FastAPI's `detail` is a plain string for HTTPException, but a list of
