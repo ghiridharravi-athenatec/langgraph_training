@@ -46,7 +46,7 @@ def test_user_gains_access_after_grant_and_loses_it_after_revoke(
     # Skip the real LLM/vector-search pipeline - only the authorization boundary is under test here.
     monkeypatch.setattr(
         "app.api.v1.api.IntentClassifier.classify_intent",
-        lambda self, question: {"intent": "greetings", "confidence": 0.99, "guardrail_events": []},
+        lambda self, question, model=None: {"intent": "greetings", "confidence": 0.99, "guardrail_events": []},
     )
 
     before = client.post("/api/v1/chat", json={"question": "hello there"}, headers=user_headers)
@@ -72,7 +72,7 @@ def test_user_gains_access_after_grant_and_loses_it_after_revoke(
 def test_admin_can_access_ragchatbot_without_explicit_grant(client, admin_headers, monkeypatch):
     monkeypatch.setattr(
         "app.api.v1.api.IntentClassifier.classify_intent",
-        lambda self, question: {"intent": "greetings", "confidence": 0.99, "guardrail_events": []},
+        lambda self, question, model=None: {"intent": "greetings", "confidence": 0.99, "guardrail_events": []},
     )
     resp = client.post("/api/v1/chat", json={"question": "hello there"}, headers=admin_headers)
     assert resp.status_code == 200

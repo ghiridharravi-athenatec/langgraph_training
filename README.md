@@ -1,5 +1,5 @@
 ---
-title: RAG Chatbot API
+title: Conversational Assistant API
 emoji: 📄
 colorFrom: blue
 colorTo: indigo
@@ -8,7 +8,7 @@ app_port: 7860
 pinned: false
 ---
 
-# RAG Chatbot — backend
+# Conversational Assistant — backend
 
 FastAPI + LangGraph RAG pipeline (MongoDB Atlas Vector Search, Gemini, local
 Presidio/spaCy PII detection) deployed here as a Hugging Face Space. The React

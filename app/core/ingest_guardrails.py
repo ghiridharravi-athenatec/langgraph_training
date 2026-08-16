@@ -4,6 +4,7 @@ from typing import Any, Dict, List
 from app.core import config, guardrail_config
 from app.core.guardrails import redact_pii, summarize_masked_pii
 from app.core.logger import get_logger
+from app.core.messages import msg
 
 logger = get_logger(__name__)
 
@@ -44,20 +45,20 @@ def validate_file_type(filename: str, content_bytes: bytes, check: str = "file_t
         try:
             content_bytes.decode("utf-8")
         except UnicodeDecodeError:
-            reason = "File content is not valid UTF-8 text."
+            reason = msg("ingest.invalid_text_encoding")
             logger.warning("Guardrail blocked at ingest.%s: %s (filename=%r)", check, reason, filename)
             return {"check": check, "passed": False, "reason": reason}
         return {"check": check, "passed": True, "reason": None}
 
     expected = _EXPECTED_MAGIC.get(ext)
     if expected is None:
-        reason = f"Unsupported file extension '{ext or '(none)'}'. Must be one of: {', '.join(SUPPORTED_EXTENSIONS)}."
+        reason = msg("ingest.unsupported_extension", ext=ext or "(none)", supported=", ".join(SUPPORTED_EXTENSIONS))
         logger.warning("Guardrail blocked at ingest.%s: %s", check, reason)
         return {"check": check, "passed": False, "reason": reason}
 
     magic, label = expected
     if not content_bytes.startswith(magic):
-        reason = f"File content does not match its extension - expected a valid {label} file."
+        reason = msg("ingest.content_mismatch", label=label)
         logger.warning("Guardrail blocked at ingest.%s: %s (filename=%r)", check, reason, filename)
         return {"check": check, "passed": False, "reason": reason}
 
@@ -71,7 +72,7 @@ def validate_file_type(filename: str, content_bytes: bytes, check: str = "file_t
 def validate_file_size(size_bytes: int, check: str = "file_size") -> Dict[str, Any]:
     max_bytes = config.MAX_UPLOAD_SIZE_MB * 1024 * 1024
     if size_bytes > max_bytes:
-        reason = f"File is {size_bytes / (1024 * 1024):.1f}MB, exceeds the {config.MAX_UPLOAD_SIZE_MB}MB limit."
+        reason = msg("ingest.too_large", size_mb=size_bytes / (1024 * 1024), max_mb=config.MAX_UPLOAD_SIZE_MB)
         logger.warning("Guardrail blocked at ingest.%s: %s", check, reason)
         return {"check": check, "passed": False, "reason": reason}
 

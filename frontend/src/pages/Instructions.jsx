@@ -24,18 +24,18 @@ export default function Instructions() {
       <div className="ingest-cards instructions-cards">
         <div className="ingest-card">
           <h3>Using the app</h3>
-          <FlowBar steps={["Login", "RAG Chatbot", "Document Ingestion", "Chat", "Tracing", "Documents"]} />
+          <FlowBar steps={["Login", "Conversational Assistant", "Data Ingestion", "Chat", "Tracing", "Documents"]} />
           <ol className="instructions-list">
             <li>
               <strong>Login</strong> — sign up (first time) or log in with your email and password.
             </li>
             <li>
-              <strong>RAG Chatbot</strong> — on the Projects page, click the <em>RAG Chatbot</em> card. This opens
-              the chatbot workspace, with <em>Document Ingestion</em>, <em>Chat</em>, <em>Tracing</em>, and{" "}
+              <strong>Conversational Assistant</strong> — on the Projects page, click the <em>Conversational Assistant</em> card. This opens
+              the chatbot workspace, with <em>Data Ingestion</em>, <em>Chat</em>, <em>Tracing</em>, and{" "}
               <em>Documents</em> in its left sidebar.
             </li>
             <li>
-              <strong>Document Ingestion</strong> — choose a file (PDF, XLSX, DOCX, or TXT) → optionally uncheck any
+              <strong>Data Ingestion</strong> — choose a file (PDF, XLSX, DOCX, or TXT) → optionally uncheck any
               PII types you don't want masked → click <em>Ingest document</em> → wait for the success message. Do
               this first — Chat has nothing to answer from until a document is ingested.
             </li>

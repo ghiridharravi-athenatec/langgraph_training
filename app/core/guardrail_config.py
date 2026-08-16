@@ -82,7 +82,11 @@ DEFAULTS: Dict[str, Any] = {
     "intent_confidence_threshold": 0.8,
     "semantic_cache_similarity_threshold": config.SEMANTIC_CACHE_SIMILARITY_THRESHOLD,
     "semantic_cache_max_candidates": config.SEMANTIC_CACHE_MAX_CANDIDATES,
-    "min_relevance_score": 0.5,
+    # 0.35 - BGE-M3 cosine similarity between a short question and a relevant
+    # chunk routinely lands in the 0.3-0.6 range even for a genuinely good
+    # match; 0.5 was quietly discarding legitimately relevant chunks before
+    # they ever reached the context.
+    "min_relevance_score": 0.35,
     "max_context_chunks": 8,
     "max_context_chars": config.MAX_CONTEXT_CHARS,
     "min_groundedness_score": config.MIN_GROUNDEDNESS_SCORE,

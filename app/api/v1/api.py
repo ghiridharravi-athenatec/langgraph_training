@@ -13,6 +13,7 @@ from app.utils.mongo import (
     create_conversation,
     create_document_record,
     get_conversation,
+    get_conversation_history,
     get_daily_usage,
     increment_usage,
     touch_conversation,
@@ -26,14 +27,16 @@ from app.core import config, guardrail_config
 from app.core.logger import get_logger
 from app.core.guardrails import validate_input, validate_has_documents, evaluate_intent_detection, validate_quota
 from app.core.ingest_guardrails import validate_file_size, validate_file_type
+from app.core.messages import msg
 from app.schemas.guardrail_config_schema import KNOWN_PII_ENTITIES
 from app.core.rate_limit import rate_limit
 from app.core.security import require_project_access
 from app.core.semantic_cache import find_cache_match
 from app.api.v1.auth import router as auth_router
 from app.api.v1.admin import router as admin_router
-from app.api.v1.conversations import router as conversations_router
+from app.api.v1.conversations import conversations_router, database_conversations_router
 from app.api.v1.documents import router as documents_router
+from app.api.v1.database import router as database_router
 from app.api.v1.projects import router as projects_router
 from app.api.v1.traces import router as traces_router
 from app.api.v1.guardrail_settings import router as guardrail_settings_router
@@ -45,7 +48,9 @@ logger = get_logger(__name__)
 router.include_router(auth_router)
 router.include_router(admin_router)
 router.include_router(conversations_router)
+router.include_router(database_conversations_router)
 router.include_router(documents_router)
+router.include_router(database_router)
 router.include_router(projects_router)
 router.include_router(traces_router)
 router.include_router(guardrail_settings_router)
@@ -54,7 +59,6 @@ app = FastAPI(title="My FastAPI App")
 absolute_path = os.path.abspath(".")
 UPLOAD_DIR = Path(absolute_path) / "app/uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
-API_KEY = os.getenv("GEMINI_API_KEY", "API_KEY")
 
 _require_ragchatbot_access = require_project_access("ragchatbot")
 _chat_rate_limit = rate_limit("chat", config.CHAT_RATE_LIMIT, config.RATE_LIMIT_WINDOW_SECONDS)
@@ -264,18 +268,22 @@ async def chat_with_document(
 
         if state.conversation_id:
             conversation = get_conversation(state.conversation_id)
-            if conversation is None or conversation["user_id"] != current_user["_id"]:
+            if (
+                conversation is None
+                or conversation["user_id"] != current_user["_id"]
+                or conversation.get("project_id") != "ragchatbot"
+            ):
                 raise HTTPException(status_code=404, detail="Conversation not found")
             conversation_id = conversation["_id"]
         else:
-            conversation_id = create_conversation(current_user["_id"])["_id"]
+            conversation_id = create_conversation(current_user["_id"], "ragchatbot")["_id"]
 
         input_check = validate_input(state.question)
         if not input_check["passed"]:
             logger.warning("Chat request blocked by input guardrail: %s", input_check["reason"])
             response = {
                 "message": "Request blocked by input validation",
-                "answer": f"I can't process this request: {input_check['reason']}",
+                "answer": msg("common.blocked_prefix", reason=input_check["reason"]),
                 "logs": [f"[guardrail:input_validation] BLOCKED - {input_check['reason']}"],
                 "graph_response": _build_graph_response(state, extra_guardrail_events=[input_check]),
             }
@@ -288,17 +296,19 @@ async def chat_with_document(
         # the event loop - and hence every other in-flight request on this worker -
         # while waiting on either one.
         today = date.today().isoformat()
-        has_documents, daily_usage = await asyncio.gather(
+        has_documents, daily_usage, history = await asyncio.gather(
             asyncio.to_thread(user_has_documents, current_user["_id"]),
             asyncio.to_thread(get_daily_usage, current_user["_id"], today),
+            asyncio.to_thread(get_conversation_history, conversation_id, config.CHAT_HISTORY_MAX_TURNS),
         )
+        state.history = history
 
         documents_event = validate_has_documents(has_documents)
         if not documents_event["passed"]:
             logger.warning("Chat request blocked by knowledge base guardrail: %s", documents_event["reason"])
             response = {
                 "message": "Request blocked by knowledge base check",
-                "answer": "You haven't ingested any documents yet. Upload one from the Document Ingestion tab before asking a question.",
+                "answer": documents_event["reason"],
                 "logs": [f"[guardrail:documents_check] BLOCKED - {documents_event['reason']}"],
                 "graph_response": _build_graph_response(state, extra_guardrail_events=[input_check, documents_event]),
             }
@@ -313,19 +323,21 @@ async def chat_with_document(
             logger.warning("Chat request blocked by quota guardrail: %s", quota_event["reason"])
             response = {
                 "message": "Request blocked by quota",
-                "answer": f"I'm sorry, this request can't be processed: {quota_event['reason']}",
+                "answer": msg("common.blocked_prefix", reason=quota_event["reason"]),
                 "logs": [f"[guardrail:quota_check] BLOCKED - {quota_event['reason']}"],
                 "graph_response": _build_graph_response(state, extra_guardrail_events=[input_check, documents_event, quota_event]),
             }
             _persist_turn(conversation_id, current_user["_id"], original_question, response, blocked=True, start_time=start)
             return response
 
-        classifier = IntentClassifier(api_key=API_KEY)
-        result, timeout_event = await _run_with_timeout(classifier.classify_intent, state.question, stage="intent_classification")
+        classifier = IntentClassifier()
+        result, timeout_event = await _run_with_timeout(
+            classifier.classify_intent, state.question, model=state.model, stage="intent_classification"
+        )
         if timeout_event:
             response = {
                 "message": "Request timed out",
-                "answer": "I'm sorry, this request took too long to process. Please try again.",
+                "answer": msg("timeout.blocked_answer"),
                 "logs": [f"[guardrail:timeout] BLOCKED - {timeout_event['reason']}"],
                 "graph_response": _build_graph_response(state, extra_guardrail_events=[input_check, documents_event, quota_event, timeout_event]),
             }
@@ -340,8 +352,8 @@ async def chat_with_document(
             logger.warning("Chat request blocked by model guardrail (%s): %s", blocked_event["stage"], blocked_event["reason"])
             response = {
                 "message": "Request blocked by model safety filter",
-                "answer": f"I can't process this request: {blocked_event['reason']}",
-                "logs": [f"[guardrail:{blocked_event['stage']}] BLOCKED - {blocked_event['reason']}"],
+                "answer": msg("common.blocked_prefix", reason=blocked_event["reason"]),
+                "logs": result.get("logs", []) + [f"[guardrail:{blocked_event['stage']}] BLOCKED - {blocked_event['reason']}"],
                 "graph_response": _build_graph_response(state, extra_guardrail_events=guardrail_events),
             }
             _persist_turn(conversation_id, current_user["_id"], original_question, response, blocked=True, start_time=start)
@@ -355,7 +367,7 @@ async def chat_with_document(
             logger.warning("Chat request blocked by intent detection guardrail: %s", intent_event["reason"])
             response = {
                 "message": "Request blocked by intent detection",
-                "answer": "I'm sorry, I couldn't confidently tell what you're asking. Could you rephrase your question?",
+                "answer": msg("intent_detection.blocked_answer"),
                 "logs": [f"[guardrail:intent_detection] BLOCKED - {intent_event['reason']}"],
                 "graph_response": _build_graph_response(state, extra_guardrail_events=guardrail_events),
             }
@@ -366,8 +378,8 @@ async def chat_with_document(
             logger.info("Responded with greeting message")
             response = {
                 "message": "Chat completed successfully",
-                "answer": "Hello! How can I assist you today? Ask me a question about any of the documents you've uploaded.",
-                "logs": ["Intent classified as 'greetings'. Responded with a greeting message.", "Intent classification confidence: {:.2f}".format(result["confidence"])],
+                "answer": msg("greeting.response"),
+                "logs": result.get("logs", []) + ["Intent classified as 'greetings'. Responded with a greeting message.", "Intent classification confidence: {:.2f}".format(result["confidence"])],
                 "graph_response": _build_graph_response(state, extra_guardrail_events=guardrail_events),
             }
             _persist_turn(conversation_id, current_user["_id"], original_question, response, blocked=False, start_time=start)
@@ -393,7 +405,7 @@ async def chat_with_document(
                 "message": "Chat completed successfully (cached)",
                 "answer": cache_match["answer"],
                 "images": [],
-                "logs": [f"[guardrail:semantic_cache] HIT - reused answer from a similar past question (similarity {cache_match['similarity']:.2f})"],
+                "logs": result.get("logs", []) + [f"[guardrail:semantic_cache] HIT - reused answer from a similar past question (similarity {cache_match['similarity']:.2f})"],
                 "graph_response": _build_graph_response(state, extra_guardrail_events=guardrail_events),
             }
             _persist_turn(
@@ -408,7 +420,7 @@ async def chat_with_document(
         if timeout_event:
             response = {
                 "message": "Request timed out",
-                "answer": "I'm sorry, this request took too long to process. Please try again.",
+                "answer": msg("timeout.blocked_answer"),
                 "logs": [f"[guardrail:timeout] BLOCKED - {timeout_event['reason']}"],
                 "graph_response": _build_graph_response(state, extra_guardrail_events=guardrail_events + [timeout_event]),
             }
@@ -426,7 +438,7 @@ async def chat_with_document(
             "message": "Chat completed successfully",
             "answer": compile["answer"],
             "images": image_paths,
-            "logs": [compile["logs"], "Intent classified as '{}' with confidence {:.2f}".format(result["intent"], result["confidence"])],
+            "logs": result.get("logs", []) + [compile["logs"], "Intent classified as '{}' with confidence {:.2f}".format(result["intent"], result["confidence"])],
             "graph_response": graph_response,
         }
         _persist_turn(

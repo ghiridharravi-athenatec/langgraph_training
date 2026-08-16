@@ -5,6 +5,8 @@ import remarkGfm from "remark-gfm";
 import api, { formatErrorDetail } from "../api/client";
 import GuardrailPanel from "../components/GuardrailPanel";
 import DocumentsPanel from "../components/DocumentsPanel";
+import ModelPicker from "../components/ModelPicker";
+import ThinkingIndicator from "../components/ThinkingIndicator";
 import { TracingTab } from "./Traces";
 import { useAuth } from "../context/AuthContext";
 import { formatResponseTime } from "../utils/formatResponseTime";
@@ -12,9 +14,17 @@ import { formatPiiTokens } from "../utils/formatPii";
 
 const SECTIONS = [
   { id: "chat", label: "Chat", icon: "◧" },
-  { id: "ingest", label: "Document Ingestion", icon: "▤" },
+  { id: "ingest", label: "Data Ingestion", icon: "▤" },
   { id: "documents", label: "Documents", icon: "▦" },
   { id: "tracing", label: "Tracing", icon: "≋" },
+];
+
+const THINKING_MESSAGES = [
+  "Reading your question…",
+  "Searching your documents…",
+  "Reviewing relevant passages…",
+  "Drafting an answer…",
+  "Double-checking the response…",
 ];
 
 // Human-readable labels for the entity type names GET /ingest/pii-options returns -
@@ -57,6 +67,8 @@ export default function RagChatbot() {
   const [ingesting, setIngesting] = useState(false);
   const [piiOptions, setPiiOptions] = useState([]);
   const [selectedPiiEntities, setSelectedPiiEntities] = useState([]);
+
+  const [selectedModel, setSelectedModel] = useState("sonnet");
 
   const [hasDocuments, setHasDocuments] = useState(null); // null = not checked yet, so the banner never flashes
 
@@ -161,7 +173,7 @@ export default function RagChatbot() {
     setSending(true);
 
     try {
-      const { data } = await api.post("/chat", { question, conversation_id: activeConversationId });
+      const { data } = await api.post("/chat", { question, conversation_id: activeConversationId, model: selectedModel });
       setMessages((prev) => [
         ...prev,
         {
@@ -250,7 +262,7 @@ export default function RagChatbot() {
 
       <main className="chat-nav-main">
         {activeSection === "chat" && (
-          <div className="chat-section">
+          <div className="chat-section animate-switch">
             <aside className="chat-conversations-rail">
               <button className="btn-new-chat" onClick={startNewChat}>
                 <span>+</span> New chat
@@ -286,7 +298,7 @@ export default function RagChatbot() {
                   {hasDocuments === false && (
                     <div className="chat-disclaimer">
                       You haven't ingested any documents yet — answers won't have anything to draw on. Upload one
-                      from the <strong>Document Ingestion</strong> tab first.
+                      from the <strong>Data Ingestion</strong> tab first.
                     </div>
                   )}
 
@@ -326,19 +338,14 @@ export default function RagChatbot() {
                     </div>
                   ))}
 
-                  {sending && (
-                    <div className="chat-message chat-message-assistant">
-                      <div className="chat-bubble chat-bubble-typing">
-                        <span className="typing-dot" />
-                        <span className="typing-dot" />
-                        <span className="typing-dot" />
-                      </div>
-                    </div>
-                  )}
+                  {sending && <ThinkingIndicator messages={THINKING_MESSAGES} />}
                 </div>
               </div>
 
               <form onSubmit={handleSend} className="chat-input-bar">
+                <div className="chat-input-toolbar">
+                  <ModelPicker value={selectedModel} onChange={setSelectedModel} disabled={sending} />
+                </div>
                 <div className="chat-input-column">
                   <input
                     type="text"
@@ -363,7 +370,7 @@ export default function RagChatbot() {
         {activeSection === "ingest" && (
           <div className="traces-page">
             <div className="traces-page-header">
-              <h1>Document Ingestion</h1>
+              <h1>Data Ingestion</h1>
               <p className="muted">Upload any document - PDF, XLSX, DOCX, or TXT. Only you can retrieve from what you upload.</p>
             </div>
 
@@ -436,7 +443,7 @@ export default function RagChatbot() {
 
         {activeSection === "documents" && <DocumentsPanel />}
 
-        {activeSection === "tracing" && <TracingTab />}
+        {activeSection === "tracing" && <TracingTab projectId="ragchatbot" />}
       </main>
     </div>
   );

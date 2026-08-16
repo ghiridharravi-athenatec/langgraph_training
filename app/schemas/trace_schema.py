@@ -27,6 +27,8 @@ class TraceMessageOut(BaseModel):
     content: str
     logs: Optional[List[Any]] = None
     graph_response: Optional[Any] = None
+    # Only populated for database-chatbot messages - see TraceTurnOut.
+    guardrail_events: Optional[List[Any]] = None
     cached: Optional[bool] = None
     blocked: Optional[bool] = None
     response_time_ms: Optional[float] = None
@@ -44,6 +46,9 @@ class TraceTurnOut(BaseModel):
     created_at: datetime
     logs: Optional[List[Any]] = None
     graph_response: Optional[Any] = None
+    # Only populated for database-chatbot turns - the agent's tool-call trace,
+    # rendered as a ToolCallLog instead of the document pipeline's checklist.
+    guardrail_events: Optional[List[Any]] = None
     cached: Optional[bool] = None
     blocked: Optional[bool] = None
     response_time_ms: Optional[float] = None

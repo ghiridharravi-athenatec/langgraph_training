@@ -12,6 +12,8 @@ fastapi
 uvicorn[standard]
 langchain-groq
 google-genai
+anthropic
+pyyaml
 python-dotenv
 streamlit
 requests
@@ -25,6 +27,10 @@ cryptography
 pyjwt
 bcrypt
 email-validator
+sqlalchemy
+psycopg2-binary
+pymysql
+pyodbc
 pytest
 pytest-asyncio
 mongomock

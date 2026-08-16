@@ -82,7 +82,7 @@ def test_conversations_require_ragchatbot_permission(client, user_headers):
 def test_chat_auto_creates_conversation_and_persists_history(client, admin_headers, admin_id, monkeypatch):
     monkeypatch.setattr(
         "app.api.v1.api.IntentClassifier.classify_intent",
-        lambda self, question: {"intent": "greetings", "confidence": 0.99, "guardrail_events": []},
+        lambda self, question, model=None: {"intent": "greetings", "confidence": 0.99, "guardrail_events": []},
     )
     seed_document(admin_id)
     resp = client.post("/api/v1/chat", json={"question": "hello there"}, headers=admin_headers)
@@ -105,7 +105,7 @@ def test_chat_auto_creates_conversation_and_persists_history(client, admin_heade
 def test_chat_with_explicit_conversation_id_reuses_it(client, admin_headers, admin_id, monkeypatch):
     monkeypatch.setattr(
         "app.api.v1.api.IntentClassifier.classify_intent",
-        lambda self, question: {"intent": "greetings", "confidence": 0.99, "guardrail_events": []},
+        lambda self, question, model=None: {"intent": "greetings", "confidence": 0.99, "guardrail_events": []},
     )
     seed_document(admin_id)
     conversation_id = client.post("/api/v1/conversations", headers=admin_headers).json()["id"]
@@ -123,7 +123,7 @@ def test_chat_with_explicit_conversation_id_reuses_it(client, admin_headers, adm
 def test_chat_with_unknown_conversation_id_404s(client, admin_headers, monkeypatch):
     monkeypatch.setattr(
         "app.api.v1.api.IntentClassifier.classify_intent",
-        lambda self, question: {"intent": "greetings", "confidence": 0.99, "guardrail_events": []},
+        lambda self, question, model=None: {"intent": "greetings", "confidence": 0.99, "guardrail_events": []},
     )
     resp = client.post(
         "/api/v1/chat", json={"question": "hi", "conversation_id": "no-such-id"}, headers=admin_headers
@@ -139,3 +139,66 @@ def test_blocked_turn_is_still_persisted(client, admin_headers):
     messages = client.get(f"/api/v1/conversations/{conversations[0]['id']}/messages", headers=admin_headers).json()
     assert len(messages) == 2
     assert messages[1]["blocked"] is True
+
+
+def _fake_graph_invoke_capturing_history():
+    captured = {"history": None}
+
+    def fake_invoke(state):
+        captured["history"] = state.history
+        return {
+            "answer": "some answer",
+            "retrieved_chunks": [], "reranked_chunks": [], "context": "",
+            "logs": ["fake"], "guardrail_events": [], "blocked": False, "token_count": 0,
+        }
+
+    return captured, fake_invoke
+
+
+def test_second_turn_receives_first_turns_history(client, admin_headers, admin_id, monkeypatch):
+    monkeypatch.setattr(
+        "app.api.v1.api.IntentClassifier.classify_intent",
+        lambda self, question, model=None: {"intent": "question", "confidence": 0.99, "guardrail_events": []},
+    )
+    seed_document(admin_id)
+    conversation_id = client.post("/api/v1/conversations", headers=admin_headers).json()["id"]
+
+    captured, fake_invoke = _fake_graph_invoke_capturing_history()
+    monkeypatch.setattr("app.api.v1.api.compiled_graph.invoke", fake_invoke)
+
+    client.post(
+        "/api/v1/chat", json={"question": "what is the warranty", "conversation_id": conversation_id},
+        headers=admin_headers,
+    )
+    assert captured["history"] == []  # first turn in the conversation has no prior history
+
+    client.post(
+        "/api/v1/chat", json={"question": "and the return policy", "conversation_id": conversation_id},
+        headers=admin_headers,
+    )
+    assert captured["history"] == [
+        {"role": "user", "content": "what is the warranty"},
+        {"role": "assistant", "content": "some answer"},
+    ]
+
+
+def test_history_excludes_blocked_turns(client, admin_headers, admin_id, monkeypatch):
+    monkeypatch.setattr(
+        "app.api.v1.api.IntentClassifier.classify_intent",
+        lambda self, question, model=None: {"intent": "question", "confidence": 0.99, "guardrail_events": []},
+    )
+    seed_document(admin_id)
+    conversation_id = client.post("/api/v1/conversations", headers=admin_headers).json()["id"]
+
+    # "u" is too short - blocked by input validation before the graph ever runs.
+    client.post(
+        "/api/v1/chat", json={"question": "u", "conversation_id": conversation_id}, headers=admin_headers,
+    )
+
+    captured, fake_invoke = _fake_graph_invoke_capturing_history()
+    monkeypatch.setattr("app.api.v1.api.compiled_graph.invoke", fake_invoke)
+    client.post(
+        "/api/v1/chat", json={"question": "what is the warranty", "conversation_id": conversation_id},
+        headers=admin_headers,
+    )
+    assert captured["history"] == []  # the blocked turn isn't fed back in as context

@@ -143,7 +143,7 @@ def _fake_graph_invoke_counter():
 def test_semantic_cache_hit_skips_the_expensive_pipeline(client, admin_headers, admin_id, monkeypatch):
     monkeypatch.setattr(
         "app.api.v1.api.IntentClassifier.classify_intent",
-        lambda self, question: {"intent": "question", "confidence": 0.99, "guardrail_events": []},
+        lambda self, question, model=None: {"intent": "question", "confidence": 0.99, "guardrail_events": []},
     )
     call_count, fake_invoke = _fake_graph_invoke_counter()
     monkeypatch.setattr("app.api.v1.api.compiled_graph.invoke", fake_invoke)
@@ -170,7 +170,7 @@ def test_semantic_cache_hit_skips_the_expensive_pipeline(client, admin_headers, 
 def test_semantic_cache_never_reused_across_users(client, admin_headers, monkeypatch):
     monkeypatch.setattr(
         "app.api.v1.api.IntentClassifier.classify_intent",
-        lambda self, question: {"intent": "question", "confidence": 0.99, "guardrail_events": []},
+        lambda self, question, model=None: {"intent": "question", "confidence": 0.99, "guardrail_events": []},
     )
     call_count, fake_invoke = _fake_graph_invoke_counter()
     monkeypatch.setattr("app.api.v1.api.compiled_graph.invoke", fake_invoke)
@@ -199,7 +199,7 @@ def test_semantic_cache_never_reused_across_users(client, admin_headers, monkeyp
 def test_blocked_answers_never_become_cache_candidates(client, admin_headers, admin_id, monkeypatch):
     monkeypatch.setattr(
         "app.api.v1.api.IntentClassifier.classify_intent",
-        lambda self, question: {"intent": "question", "confidence": 0.99, "guardrail_events": []},
+        lambda self, question, model=None: {"intent": "question", "confidence": 0.99, "guardrail_events": []},
     )
     call_count, fake_invoke = _fake_graph_invoke_counter()
 

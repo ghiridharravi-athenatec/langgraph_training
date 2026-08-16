@@ -10,6 +10,7 @@ the exact code path with the bug.'''
 import json
 from unittest.mock import MagicMock
 
+from app.core import llm_provider
 from app.utils.llm import IntentClassifier
 from app.utils.retrieve import llm_invoke
 
@@ -23,9 +24,17 @@ def _fake_response(text, usage=None):
     return response
 
 
+def _force_gemini_path(monkeypatch, fake_response):
+    '''llm_provider tries Claude first - forcing it unconfigured drives every call in
+    this test straight to the (mocked) Gemini path deterministically, regardless of
+    whatever CLAUDE_API_KEY happens to be set in the real environment these tests run in.'''
+    monkeypatch.setattr(llm_provider, "_anthropic_client", None)
+    monkeypatch.setattr(llm_provider._gemini_client.models, "generate_content", lambda **kwargs: fake_response)
+
+
 def test_llm_invoke_result_has_no_circular_reference(monkeypatch):
     fake = _fake_response('{"answer": "the sky is blue"}')
-    monkeypatch.setattr("app.utils.retrieve.client.models.generate_content", lambda **kwargs: fake)
+    _force_gemini_path(monkeypatch, fake)
 
     result = llm_invoke("irrelevant prompt")
 
@@ -38,9 +47,9 @@ def test_llm_invoke_result_has_no_circular_reference(monkeypatch):
 
 def test_classify_intent_result_has_no_circular_reference(monkeypatch):
     fake = _fake_response('{"intent": "question", "confidence": 0.95, "is_prompt_injection": false, "injection_reason": ""}')
-    classifier = IntentClassifier(api_key="test-key")
-    monkeypatch.setattr(classifier.client.models, "generate_content", lambda **kwargs: fake)
+    _force_gemini_path(monkeypatch, fake)
 
+    classifier = IntentClassifier()
     result = classifier.classify_intent("what is the warranty period on this product")
 
     json.dumps(result, default=str)

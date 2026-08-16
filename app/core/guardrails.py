@@ -9,8 +9,9 @@ import numpy as np
 from cryptography.fernet import Fernet, InvalidToken
 from google.genai import types
 
-from app.core import guardrail_config
+from app.core import config, guardrail_config
 from app.core.logger import get_logger
+from app.core.messages import msg
 
 logger = get_logger(__name__)
 
@@ -62,16 +63,46 @@ _PII_PATTERNS = {
 
 _ENCODED_PII_RE = re.compile(r"\[\[PII:([A-Z_]+):([A-Za-z0-9_\-=]+)\]\]")
 
-_PII_ENCRYPTION_KEY = os.getenv("PII_ENCRYPTION_KEY")
-if not _PII_ENCRYPTION_KEY:
-    _PII_ENCRYPTION_KEY = Fernet.generate_key().decode()
-    logger.warning(
-        "PII_ENCRYPTION_KEY not set - using an ephemeral key for this process. "
-        "Masked PII will be UNRECOVERABLE after restart. Generate one with "
-        "`python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\"` "
-        "and set it via your secrets manager for any deployment that needs restore_pii()."
-    )
-_fernet = Fernet(_PII_ENCRYPTION_KEY.encode())
+def _build_fernet() -> Fernet:
+    key = os.getenv("PII_ENCRYPTION_KEY")
+    if key:
+        try:
+            return Fernet(key.encode())
+        except ValueError:
+            # Malformed key (wrong length/padding, not real base64, etc.) - degrade to
+            # the same ephemeral-key fallback as "unset" rather than crashing the whole
+            # app at import time over a typo in one env var, UNLESS the operator has opted
+            # into strict startup via REQUIRE_PERSISTENT_ENCRYPTION_KEYS.
+            if config.REQUIRE_PERSISTENT_ENCRYPTION_KEYS:
+                raise RuntimeError(
+                    "PII_ENCRYPTION_KEY is set but isn't a valid Fernet key (expected 32 url-safe "
+                    "base64-encoded bytes), and REQUIRE_PERSISTENT_ENCRYPTION_KEYS is set - refusing to "
+                    "start with an ephemeral key. Generate a real one with `python -c \"from cryptography."
+                    "fernet import Fernet; print(Fernet.generate_key().decode())\"` and fix it in your .env."
+                )
+            logger.warning(
+                "PII_ENCRYPTION_KEY is set but isn't a valid Fernet key (expected 32 url-safe "
+                "base64-encoded bytes) - using an ephemeral key for this process instead. Generate a "
+                "real one with `python -c \"from cryptography.fernet import Fernet; "
+                "print(Fernet.generate_key().decode())\"` and fix it in your .env."
+            )
+    else:
+        if config.REQUIRE_PERSISTENT_ENCRYPTION_KEYS:
+            raise RuntimeError(
+                "PII_ENCRYPTION_KEY not set, and REQUIRE_PERSISTENT_ENCRYPTION_KEYS is set - refusing to "
+                "start with an ephemeral key. Generate one with `python -c \"from cryptography.fernet import "
+                "Fernet; print(Fernet.generate_key().decode())\"` and set it via your secrets manager."
+            )
+        logger.warning(
+            "PII_ENCRYPTION_KEY not set - using an ephemeral key for this process. "
+            "Masked PII will be UNRECOVERABLE after restart. Generate one with "
+            "`python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\"` "
+            "and set it via your secrets manager for any deployment that needs restore_pii()."
+        )
+    return Fernet(Fernet.generate_key())
+
+
+_fernet = _build_fernet()
 
 _analyzer_engine = None
 
@@ -190,24 +221,24 @@ def validate_json_schema(raw_text: str, required_fields: Dict[str, type], stage:
     try:
         parsed = json.loads(raw_text)
     except (json.JSONDecodeError, TypeError) as e:
-        reason = f"Model response was not valid JSON: {e}"
+        reason = msg("model_output_schema.not_json", error=e)
         logger.warning("Guardrail blocked at %s: %s", stage, reason)
         return _event(stage, False, reason, parsed=None)
 
     if not isinstance(parsed, dict):
-        reason = "Model response was valid JSON but not a JSON object."
+        reason = msg("model_output_schema.not_object")
         logger.warning("Guardrail blocked at %s: %s", stage, reason)
         return _event(stage, False, reason, parsed=None)
 
     missing = [f for f in required_fields if f not in parsed]
     if missing:
-        reason = f"Model response is missing required field(s): {', '.join(missing)}."
+        reason = msg("model_output_schema.missing_fields", fields=", ".join(missing))
         logger.warning("Guardrail blocked at %s: %s", stage, reason)
         return _event(stage, False, reason, parsed=parsed)
 
     wrong_type = [f for f, t in required_fields.items() if f in parsed and not isinstance(parsed[f], t)]
     if wrong_type:
-        reason = f"Model response field(s) have the wrong type: {', '.join(wrong_type)}."
+        reason = msg("model_output_schema.wrong_type", fields=", ".join(wrong_type))
         logger.warning("Guardrail blocked at %s: %s", stage, reason)
         return _event(stage, False, reason, parsed=parsed)
 
@@ -236,9 +267,9 @@ def validate_input(question: str) -> Dict[str, Any]:
     checks: List[Dict[str, Any]] = []
 
     if len(question) < cfg["min_question_length"]:
-        length_passed, length_reason = False, "Question is empty or too short."
+        length_passed, length_reason = False, msg("input_validation.too_short")
     elif len(question) > cfg["max_question_length"]:
-        length_passed, length_reason = False, f"Question exceeds {cfg['max_question_length']} characters."
+        length_passed, length_reason = False, msg("input_validation.too_long", max=cfg["max_question_length"])
     else:
         length_passed, length_reason = True, None
     checks.append({"check": "length", "passed": length_passed, "reason": length_reason})
@@ -247,20 +278,20 @@ def validate_input(question: str) -> Dict[str, Any]:
     checks.append({
         "check": "prompt_injection_regex",
         "passed": not injection_hit,
-        "reason": "Potential prompt injection detected." if injection_hit else None,
+        "reason": msg("input_validation.prompt_injection") if injection_hit else None,
     })
 
     keyword_hit = any(kw in question.lower() for kw in cfg["blocked_keywords"])
     checks.append({
         "check": "blocked_keywords",
         "passed": not keyword_hit,
-        "reason": "Question contains disallowed content." if keyword_hit else None,
+        "reason": msg("input_validation.blocked_keyword") if keyword_hit else None,
     })
 
     failed = next((c for c in checks if not c["passed"]), None)
     if failed:
         logger.warning("Guardrail blocked at input_validation.%s: %s (question=%r)", failed["check"], failed["reason"], question)
-        checks.append({"check": "pii_masking", "passed": None, "reason": "Skipped - blocked earlier", "pii_detected": []})
+        checks.append({"check": "pii_masking", "passed": None, "reason": msg("pii.skipped"), "pii_detected": []})
         return _event(
             "input_validation", False, failed["reason"],
             sanitized_question=None, category=failed["check"], checks=checks,
@@ -288,7 +319,7 @@ def validate_input(question: str) -> Dict[str, Any]:
 
 def validate_retrieval(chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
     if not chunks:
-        reason = "No relevant documents found for this question."
+        reason = msg("retrieval_validation.no_chunks_at_all")
         logger.warning("Guardrail blocked at retrieval_validation: %s", reason)
         return _event("retrieval_validation", False, reason, filtered_chunks=[])
 
@@ -300,7 +331,7 @@ def validate_retrieval(chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
     ][:cfg["max_context_chunks"]]
 
     if not filtered:
-        reason = f"No chunks met the minimum relevance score ({min_relevance_score})."
+        reason = msg("retrieval_validation.no_chunks_above_threshold", min_score=min_relevance_score)
         logger.warning("Guardrail blocked at retrieval_validation: %s", reason)
         return _event("retrieval_validation", False, reason, filtered_chunks=[])
 
@@ -334,7 +365,7 @@ def validate_context_budget(chunks: List[Dict[str, Any]], stage: str = "context_
 
     approx_tokens = total_chars // 4
     if dropped:
-        reason = f"Dropped {dropped} chunk(s) to stay within the ~{max_context_chars} character context budget."
+        reason = msg("context_budget.truncated", dropped=dropped, max_chars=max_context_chars)
         logger.warning("Guardrail truncated at %s: %s", stage, reason)
         return _event(stage, True, reason, kept_chunks=kept, approx_tokens=approx_tokens, dropped_chunks=dropped)
 
@@ -379,20 +410,20 @@ def validate_output(answer: str) -> Dict[str, Any]:
     checks.append({
         "check": "not_empty",
         "passed": not_empty,
-        "reason": None if not_empty else "Empty answer generated.",
+        "reason": None if not_empty else msg("output_validation.empty_answer"),
     })
 
     keyword_hit = not_empty and any(kw in answer.lower() for kw in cfg["blocked_keywords"])
     checks.append({
         "check": "blocked_keywords",
         "passed": not keyword_hit,
-        "reason": "Generated answer contained disallowed content." if keyword_hit else None,
+        "reason": msg("output_validation.blocked_keyword") if keyword_hit else None,
     })
 
     failed = next((c for c in checks if not c["passed"]), None)
     if failed:
         logger.warning("Guardrail blocked at output_validation.%s: %s", failed["check"], failed["reason"])
-        checks.append({"check": "pii_masking", "passed": None, "reason": "Skipped - blocked earlier", "pii_detected": []})
+        checks.append({"check": "pii_masking", "passed": None, "reason": msg("pii.skipped"), "pii_detected": []})
         return _event("output_validation", False, failed["reason"], sanitized_answer=None, checks=checks)
 
     sanitized = redact_pii(answer, cfg["output_pii_entities"], cfg["output_pii_score_threshold"])
@@ -407,7 +438,7 @@ def validate_output(answer: str) -> Dict[str, Any]:
     checks.append({
         "check": "url_allowlist",
         "passed": True,
-        "reason": f"Removed link(s) to non-allowlisted domain(s): {', '.join(sorted(set(stripped_domains)))}." if stripped_domains else None,
+        "reason": msg("output_validation.url_stripped", domains=", ".join(sorted(set(stripped_domains)))) if stripped_domains else None,
     })
 
     max_answer_length = cfg["max_answer_length"]
@@ -418,7 +449,7 @@ def validate_output(answer: str) -> Dict[str, Any]:
     checks.append({
         "check": "length_limit",
         "passed": True,
-        "reason": f"Truncated to {max_answer_length} characters." if truncated else None,
+        "reason": msg("output_validation.truncated", max_length=max_answer_length) if truncated else None,
     })
 
     logger.info("Output validation passed (length=%d)", len(sanitized))
@@ -473,7 +504,7 @@ def validate_groundedness(answer: str, context: str, embedding_model: Any, stage
     min_groundedness_score = guardrail_config.get_config()["min_groundedness_score"]
 
     if score < min_groundedness_score:
-        reason = f"Answer doesn't appear grounded in the retrieved context (similarity {score:.2f} below {min_groundedness_score:.2f})."
+        reason = msg("groundedness_check.not_grounded", score=score, min_score=min_groundedness_score)
         logger.warning("Guardrail blocked at %s: %s", stage, reason)
         return _event(stage, False, reason, score=score)
 
@@ -515,7 +546,7 @@ def evaluate_model_safety(response: Any, stage: str) -> Dict[str, Any]:
     prompt_feedback = getattr(response, "prompt_feedback", None)
     block_reason = getattr(prompt_feedback, "block_reason", None) if prompt_feedback else None
     if block_reason:
-        reason = f"Model safety filter blocked the prompt: {block_reason}"
+        reason = msg("model_safety.blocked_prompt", block_reason=block_reason)
         logger.warning("Guardrail blocked at %s: %s", stage, reason)
         return _event(stage, False, reason, flagged_categories=[])
 
@@ -526,7 +557,7 @@ def evaluate_model_safety(response: Any, stage: str) -> Dict[str, Any]:
                 flagged.append(str(rating.category))
 
     if flagged:
-        reason = f"Model safety classifier flagged: {', '.join(flagged)}"
+        reason = msg("model_safety.blocked_categories", categories=", ".join(flagged))
         logger.warning("Guardrail blocked at %s: %s", stage, reason)
         return _event(stage, False, reason, flagged_categories=flagged)
 
@@ -574,7 +605,7 @@ INJECTION_DETECTION_SCHEMA_FIELDS = '''"is_prompt_injection": true | false,
 
 def evaluate_llm_injection_verdict(is_injection: bool, reason: Optional[str], stage: str = "model_prompt_injection_check") -> Dict[str, Any]:
     if is_injection:
-        reason = reason or "Model classified this prompt as a jailbreak/prompt-injection attempt."
+        reason = reason or msg("model_prompt_injection_check.default_reason")
         logger.warning("Guardrail blocked at %s: %s", stage, reason)
         return _event(stage, False, reason)
 
@@ -595,7 +626,7 @@ def evaluate_llm_injection_verdict(is_injection: bool, reason: Optional[str], st
 def evaluate_intent_detection(intent: str, confidence: float, stage: str = "intent_detection") -> Dict[str, Any]:
     intent_confidence_threshold = guardrail_config.get_config()["intent_confidence_threshold"]
     if confidence < intent_confidence_threshold:
-        reason = f"Could not confidently determine intent (confidence {confidence:.2f} below {intent_confidence_threshold:.2f})."
+        reason = msg("intent_detection.low_confidence", confidence=confidence, threshold=intent_confidence_threshold)
         logger.warning("Guardrail blocked at %s: %s (intent=%r)", stage, reason, intent)
         return _event(stage, False, reason, intent=intent, confidence=confidence)
 
@@ -616,7 +647,7 @@ def evaluate_intent_detection(intent: str, confidence: float, stage: str = "inte
 
 def validate_quota(tokens_used_today: int, daily_quota: int, stage: str = "quota_check") -> Dict[str, Any]:
     if tokens_used_today >= daily_quota:
-        reason = f"Daily token quota exceeded ({tokens_used_today}/{daily_quota})."
+        reason = msg("quota_check.exceeded", used=tokens_used_today, quota=daily_quota)
         logger.warning("Guardrail blocked at %s: %s", stage, reason)
         return _event(stage, False, reason, tokens_used_today=tokens_used_today, daily_quota=daily_quota)
 
@@ -638,7 +669,7 @@ def validate_quota(tokens_used_today: int, daily_quota: int, stage: str = "quota
 
 def validate_has_documents(has_documents: bool, stage: str = "documents_check") -> Dict[str, Any]:
     if not has_documents:
-        reason = "No documents have been ingested yet - there's nothing for chat to answer from."
+        reason = msg("documents_check.no_documents")
         logger.warning("Guardrail blocked at %s: %s", stage, reason)
         return _event(stage, False, reason)
 

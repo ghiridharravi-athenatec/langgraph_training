@@ -109,9 +109,12 @@ function GuardrailRow({ item, events }) {
   );
 }
 
-export default function GuardrailPanel({ logs, graphResponse }) {
-  const events = graphResponse?.guardrail_events || [];
-  const groups = groupChecklist(GUARDRAIL_CHECKLIST);
+export default function GuardrailPanel({ logs, graphResponse, events: eventsProp, checklist }) {
+  // graphResponse is the document pipeline's envelope; database-chatbot turns
+  // pass events directly instead (see app/api/v1/database.py - there's no
+  // graph_response for them, just a flat guardrail_events list on the message).
+  const events = eventsProp || graphResponse?.guardrail_events || [];
+  const groups = groupChecklist(checklist || GUARDRAIL_CHECKLIST);
 
   return (
     <div className="chat-logs">

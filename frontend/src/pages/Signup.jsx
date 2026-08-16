@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { formatErrorDetail } from "../api/client";
 import { useAuth } from "../context/AuthContext";
+import { isValidEmail } from "../utils/validation";
 
 export default function Signup() {
   const { signup } = useAuth();
@@ -14,6 +15,12 @@ export default function Signup() {
   async function handleSubmit(e) {
     e.preventDefault();
     setError("");
+
+    if (!isValidEmail(email)) {
+      setError("Enter a valid email address.");
+      return;
+    }
+
     setSubmitting(true);
     try {
       await signup(email, password);
