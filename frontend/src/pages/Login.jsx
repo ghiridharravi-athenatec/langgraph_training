@@ -7,6 +7,7 @@ import pkg from "../../package.json";
 
 const TAGLINES = [
   "Grounded in your own documents.",
+  "Or query a live database - read-only, agentic.",
   "Every turn runs through PII masking.",
   "Quota, groundedness, and safety - checked live.",
   "Nothing answered without a traceable source.",
@@ -16,34 +17,52 @@ const TAGLINES = [
 const HOW_IT_WORKS = [
   {
     icon: "▤",
-    title: "Upload a document",
-    desc: "PDF, XLSX, DOCX, or TXT — only you can retrieve from what you upload.",
+    title: "Connect a source",
+    desc: "Upload a document, or connect a database — PostgreSQL, MySQL, SQL Server, MongoDB.",
   },
   {
     icon: "◧",
     title: "Ask a question",
-    desc: "Plain language, answered only from your own ingested content.",
+    desc: "Plain language — answered from your own documents, or a live read-only query.",
   },
   {
     icon: "▣",
     title: "Get a guardrailed answer",
-    desc: "PII masked, groundedness checked, every step traceable.",
+    desc: "PII masked, quota checked, write/DDL statements always rejected.",
   },
   {
     icon: "≋",
     title: "Review the trace",
-    desc: "Every check the turn passed through, laid out stage by stage.",
+    desc: "Every guardrail check or database call, laid out step by step.",
   },
 ];
 
 const FEATURE_HIGHLIGHTS = [
   "20+ automated guardrail checks",
-  "Per-user document isolation",
+  "Read-only, agentic database chat",
   "Live per-turn tracing",
   "Admin-tunable thresholds",
 ];
 
-const GUARDRAIL_CHECKS = ["PII masked", "Groundedness verified", "Quota checked"];
+// Alternates between the two chat surfaces each cycle - see DemoConversation.
+// The typewriter animation's step count (theme.css's type-answer keyframe) is
+// tuned for ~34 characters, so both answers are kept close to that length.
+const DEMO_SCENARIOS = [
+  {
+    sourceIcon: "▤",
+    sourceLabel: "report.pdf ingested",
+    question: "What was Q3 revenue?",
+    answer: "Q3 revenue was $4.2M, up 12% QoQ.",
+    checks: ["PII masked", "Groundedness verified", "Quota checked"],
+  },
+  {
+    sourceIcon: "⛁",
+    sourceLabel: "sales_db connected",
+    question: "How many orders this month?",
+    answer: "There were 1,284 orders this month.",
+    checks: ["Read-only enforced", "Query validated", "Quota checked"],
+  },
+];
 
 function TaglineRotator() {
   const [index, setIndex] = useState(0);
@@ -65,6 +84,8 @@ function TaglineRotator() {
 function DemoConversation() {
   const [step, setStep] = useState(0);
   const [fading, setFading] = useState(false);
+  const [scenarioIndex, setScenarioIndex] = useState(0);
+  const scenario = DEMO_SCENARIOS[scenarioIndex];
 
   useEffect(() => {
     let cancelled = false;
@@ -80,7 +101,13 @@ function DemoConversation() {
       timers.push(setTimeout(() => !cancelled && setStep(4), 3400));
       timers.push(setTimeout(() => !cancelled && setStep(5), 5100));
       timers.push(setTimeout(() => !cancelled && setFading(true), 8400));
-      timers.push(setTimeout(cycle, 9100));
+      timers.push(
+        setTimeout(() => {
+          if (cancelled) return;
+          setScenarioIndex((i) => (i + 1) % DEMO_SCENARIOS.length);
+          cycle();
+        }, 9100)
+      );
     }
 
     cycle();
@@ -94,15 +121,15 @@ function DemoConversation() {
     <div className={`auth-demo-card ${fading ? "auth-demo-fading" : ""}`}>
       {step >= 1 && (
         <div className="auth-demo-doc-row animate-in">
-          <span className="auth-demo-doc-icon">▤</span>
-          <span>report.pdf ingested</span>
+          <span className="auth-demo-doc-icon">{scenario.sourceIcon}</span>
+          <span>{scenario.sourceLabel}</span>
           <span className="auth-demo-check">✓</span>
         </div>
       )}
 
       {step >= 2 && (
         <div className="auth-demo-bubble-row animate-in">
-          <span className="auth-demo-bubble">What was Q3 revenue?</span>
+          <span className="auth-demo-bubble">{scenario.question}</span>
         </div>
       )}
 
@@ -116,13 +143,15 @@ function DemoConversation() {
 
       {step >= 4 && (
         <div className="auth-demo-answer-row">
-          <span className="auth-demo-answer-typeline">Q3 revenue was $4.2M, up 12% QoQ.</span>
+          <span key={scenarioIndex} className="auth-demo-answer-typeline">
+            {scenario.answer}
+          </span>
         </div>
       )}
 
       {step >= 5 && (
         <div className="auth-demo-checks-row">
-          {GUARDRAIL_CHECKS.map((check, i) => (
+          {scenario.checks.map((check, i) => (
             <span key={check} className="auth-demo-check-pill animate-in" style={{ animationDelay: `${i * 180}ms` }}>
               <span className="auth-demo-check">✓</span>
               {check}
