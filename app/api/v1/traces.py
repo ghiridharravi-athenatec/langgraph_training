@@ -1,3 +1,5 @@
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.core.security import require_project_access
@@ -27,8 +29,8 @@ def _ensure_self_or_admin(current_user: dict, owner_user_id: str) -> None:
 
 
 @router.get("/users", response_model=list[TraceUserOut])
-def list_traced_users(current_user: dict = Depends(_require_traces_access)):
-    users = list_users_with_conversation_counts()
+def list_traced_users(project_id: Optional[str] = None, current_user: dict = Depends(_require_traces_access)):
+    users = list_users_with_conversation_counts(project_id)
     if current_user.get("role") != ROLE_ADMIN:
         users = [u for u in users if u["_id"] == current_user["_id"]]
     return [
@@ -38,7 +40,7 @@ def list_traced_users(current_user: dict = Depends(_require_traces_access)):
 
 
 @router.get("/users/{user_id}/conversations", response_model=list[TraceConversationOut])
-def list_user_conversations(user_id: str, current_user: dict = Depends(_require_traces_access)):
+def list_user_conversations(user_id: str, project_id: Optional[str] = None, current_user: dict = Depends(_require_traces_access)):
     _ensure_self_or_admin(current_user, user_id)
     if get_user_by_id(user_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
@@ -52,14 +54,15 @@ def list_user_conversations(user_id: str, current_user: dict = Depends(_require_
             blocked_count=c["blocked_count"],
             cached_count=c["cached_count"],
         )
-        for c in list_conversations_with_message_counts(user_id)
+        for c in list_conversations_with_message_counts(user_id, project_id)
     ]
 
 
 @router.get("/users/{user_id}/turns", response_model=list[TraceTurnOut])
-def list_user_trace_turns(user_id: str, current_user: dict = Depends(_require_traces_access)):
+def list_user_trace_turns(user_id: str, project_id: Optional[str] = None, current_user: dict = Depends(_require_traces_access)):
     '''Flat, Langfuse-style trace list: every question this user has asked, newest
-    first, across all of their conversations.'''
+    first, across all of their conversations (or just one project's, if project_id
+    is given - see app/utils/mongo.py's list_user_turns).'''
     _ensure_self_or_admin(current_user, user_id)
     if get_user_by_id(user_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
@@ -72,11 +75,12 @@ def list_user_trace_turns(user_id: str, current_user: dict = Depends(_require_tr
             created_at=t["created_at"],
             logs=t.get("logs"),
             graph_response=t.get("graph_response"),
+            guardrail_events=t.get("guardrail_events"),
             cached=t.get("cached"),
             blocked=t.get("blocked"),
             response_time_ms=t.get("response_time_ms"),
         )
-        for t in list_user_turns(user_id)
+        for t in list_user_turns(user_id, project_id)
     ]
 
 
@@ -93,6 +97,7 @@ def get_conversation_trace(conversation_id: str, current_user: dict = Depends(_r
             content=m["content"],
             logs=m.get("logs"),
             graph_response=m.get("graph_response"),
+            guardrail_events=m.get("guardrail_events"),
             cached=m.get("cached"),
             blocked=m.get("blocked"),
             response_time_ms=m.get("response_time_ms"),

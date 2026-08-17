@@ -4,7 +4,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import api, { formatErrorDetail } from "../api/client";
 import GuardrailPanel from "../components/GuardrailPanel";
-import { groupChecklistByCategory } from "../data/guardrailChecklist";
+import ToolCallLog from "../components/ToolCallLog";
+import { groupChecklistByCategory, DATABASE_GUARDRAIL_CHECKLIST } from "../data/guardrailChecklist";
 import { useAuth } from "../context/AuthContext";
 import { formatResponseTime } from "../utils/formatResponseTime";
 import { formatPiiTokens } from "../utils/formatPii";
@@ -146,7 +147,7 @@ const SAFETY_THRESHOLD_OPTIONS = [
 // through one shared config key, so that group object is reused as-is under
 // both categories - editing it in one place edits the same config key
 // everywhere it appears. (Document ingestion has its own separate PII policy
-// too, but that lives on the Document Ingestion upload screen, not here.)
+// too, but that lives on the Data Ingestion upload screen, not here.)
 const INPUT_LENGTH_GROUP = {
   name: "Input",
   fields: [
@@ -275,6 +276,16 @@ const CONFIG_FIELD_CATEGORIES = [
     ],
   },
 ];
+
+// Display-only relabeling - internal category identifiers ("Input"/"Output")
+// stay as-is everywhere else (guardrailChecklist.js's category field, CSS,
+// etc.), only the on-screen text changes to match the pipeline's actual
+// request -> retrieval -> response framing.
+const CATEGORY_LABELS = {
+  Input: "Request",
+  Retrieval: "Retrieval",
+  Output: "Response",
+};
 
 function NumberField({ field, value, onChange, disabled }) {
   return (
@@ -405,6 +416,24 @@ function ConfigField({ field, value, onChange, disabled }) {
     default:
       return null;
   }
+}
+
+function AccordionSection({ title, defaultOpen = false, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="accordion-section">
+      <button
+        type="button"
+        className="accordion-header"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+      >
+        <span>{title}</span>
+        <span className={`accordion-chevron ${open ? "accordion-chevron-open" : ""}`}>⌄</span>
+      </button>
+      {open && <div className="accordion-body-inner animate-in">{children}</div>}
+    </div>
+  );
 }
 
 function UserQuotaEditor({ globalDefault }) {
@@ -599,38 +628,32 @@ function GuardrailsTab() {
             <p className="gr-readonly-note">You have read-only access to these settings.</p>
           )}
 
-          <div className="traces-guardrail-catalog">
-            {CONFIG_FIELD_CATEGORIES.map((category) => (
-              <div key={category.name} className="traces-guardrail-category">
-                <h3>{category.name} Guardrails</h3>
-                {category.subgroups.map((sub) => (
-                  <div key={sub.name} className="traces-guardrail-group">
-                    <h4 className="traces-guardrail-subgroup-title">{sub.name}</h4>
-                    <div className="gr-config-groups">
-                      {sub.groups.map((group) => (
-                        <div key={group.name} className="ingest-card gr-config-group">
-                          <h3>{group.name}</h3>
-                          {group.name === "Quota" && isAdmin && (
-                            <UserQuotaEditor globalDefault={config.daily_token_quota} />
-                          )}
-                          {group.fields.map((field) => (
-                            <div key={field.key} className="gr-field">
-                              <span className="field-label">{field.label}</span>
-                              <ConfigField
-                                field={field}
-                                value={config[field.key]}
-                                onChange={(v) => setField(field.key, v)}
-                                disabled={!isAdmin}
-                              />
-                              {field.hint && <span className="gr-field-hint">{field.hint}</span>}
-                            </div>
-                          ))}
+          <div className="traces-guardrail-catalog traces-guardrail-accordion">
+            {CONFIG_FIELD_CATEGORIES.map((category, i) => (
+              <AccordionSection key={category.name} title={CATEGORY_LABELS[category.name] || category.name} defaultOpen={i === 0}>
+                <div className="gr-config-groups">
+                  {category.subgroups.flatMap((sub) => sub.groups).map((group) => (
+                    <div key={group.name} className="ingest-card gr-config-group">
+                      <h3>{group.name}</h3>
+                      {group.name === "Quota" && isAdmin && (
+                        <UserQuotaEditor globalDefault={config.daily_token_quota} />
+                      )}
+                      {group.fields.map((field) => (
+                        <div key={field.key} className="gr-field">
+                          <span className="field-label">{field.label}</span>
+                          <ConfigField
+                            field={field}
+                            value={config[field.key]}
+                            onChange={(v) => setField(field.key, v)}
+                            disabled={!isAdmin}
+                          />
+                          {field.hint && <span className="gr-field-hint">{field.hint}</span>}
                         </div>
                       ))}
                     </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              </AccordionSection>
             ))}
           </div>
 
@@ -655,24 +678,18 @@ function GuardrailsTab() {
         <p className="muted">Every guardrail check implemented in the RAG pipeline, grouped by the stage it runs at.</p>
       </div>
 
-      <div className="traces-guardrail-catalog">
-        {catalogGroups.map((category) => (
-          <div key={category.name} className="traces-guardrail-category">
-            <h3>{category.name} Guardrails</h3>
-            {category.subgroups.map((sub) => (
-              <div key={sub.name} className="traces-guardrail-group">
-                <h4 className="traces-guardrail-subgroup-title">{sub.name}</h4>
-                <div className="traces-guardrail-catalog-list">
-                  {sub.items.map((item) => (
-                    <div key={item.id} className="traces-guardrail-catalog-item">
-                      <span className="traces-guardrail-catalog-name">{item.label}</span>
-                      <p className="traces-guardrail-catalog-desc">{item.description}</p>
-                    </div>
-                  ))}
+      <div className="traces-guardrail-catalog traces-guardrail-accordion">
+        {catalogGroups.map((category, i) => (
+          <AccordionSection key={category.name} title={CATEGORY_LABELS[category.name] || category.name} defaultOpen={i === 0}>
+            <div className="traces-guardrail-catalog-list">
+              {category.subgroups.flatMap((sub) => sub.items).map((item) => (
+                <div key={item.id} className="traces-guardrail-catalog-item">
+                  <span className="traces-guardrail-catalog-name">{item.label}</span>
+                  <p className="traces-guardrail-catalog-desc">{item.description}</p>
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          </AccordionSection>
         ))}
       </div>
     </div>
@@ -683,14 +700,14 @@ function GuardrailsTab() {
 // Tracing tab - drill down: users -> that user's conversations -> full trace.
 // ---------------------------------------------------------------------------
 
-function TracingUsers({ onSelectUser }) {
+function TracingUsers({ onSelectUser, projectId }) {
   const [users, setUsers] = useState([]);
   const [status, setStatus] = useState("loading");
   const [error, setError] = useState("");
 
   useEffect(() => {
     api
-      .get("/traces/users")
+      .get("/traces/users", { params: { project_id: projectId } })
       .then(({ data }) => {
         setUsers(data);
         setStatus("ready");
@@ -748,7 +765,7 @@ function truncate(text, max = 90) {
 
 // Flat, Langfuse-style trace list: every question this user has asked, newest
 // first, across every conversation - not grouped by conversation.
-function TracingUserQuestions({ user, onSelectTurn, onBack }) {
+function TracingUserQuestions({ user, onSelectTurn, onBack, projectId }) {
   const [turns, setTurns] = useState([]);
   const [status, setStatus] = useState("loading");
   const [error, setError] = useState("");
@@ -756,7 +773,7 @@ function TracingUserQuestions({ user, onSelectTurn, onBack }) {
   useEffect(() => {
     setStatus("loading");
     api
-      .get(`/traces/users/${user.id}/turns`)
+      .get(`/traces/users/${user.id}/turns`, { params: { project_id: projectId } })
       .then(({ data }) => {
         setTurns(data);
         setStatus("ready");
@@ -765,6 +782,7 @@ function TracingUserQuestions({ user, onSelectTurn, onBack }) {
         setError(formatErrorDetail(err, "Failed to load questions."));
         setStatus("error");
       });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user.id]);
 
   return (
@@ -863,8 +881,17 @@ function TracingTurnDetail({ user, turn, onBackToUsers, onBackToQuestions }) {
               </div>
             </div>
           </div>
-          {(turn.logs?.length > 0 || turn.graph_response) && (
-            <GuardrailPanel logs={turn.logs} graphResponse={turn.graph_response} />
+          {turn.graph_response ? (
+            (turn.logs?.length > 0 || turn.graph_response) && (
+              <GuardrailPanel logs={turn.logs} graphResponse={turn.graph_response} />
+            )
+          ) : (
+            (turn.guardrail_events?.length > 0 || turn.logs?.length > 0) && (
+              <>
+                <GuardrailPanel logs={turn.logs} events={turn.guardrail_events} checklist={DATABASE_GUARDRAIL_CHECKLIST} />
+                <ToolCallLog events={turn.guardrail_events} />
+              </>
+            )
           )}
         </div>
       </div>
@@ -872,7 +899,7 @@ function TracingTurnDetail({ user, turn, onBackToUsers, onBackToQuestions }) {
   );
 }
 
-export function TracingTab() {
+export function TracingTab({ projectId } = {}) {
   const { isAdmin, user: authUser } = useAuth();
   const [selectedUser, setSelectedUser] = useState(null);
   const [selectedTurn, setSelectedTurn] = useState(null);
@@ -908,11 +935,12 @@ export function TracingTab() {
         user={effectiveUser}
         onSelectTurn={setSelectedTurn}
         onBack={isAdmin ? () => setSelectedUser(null) : undefined}
+        projectId={projectId}
       />
     );
   }
 
-  return <TracingUsers onSelectUser={setSelectedUser} />;
+  return <TracingUsers onSelectUser={setSelectedUser} projectId={projectId} />;
 }
 
 // ---------------------------------------------------------------------------

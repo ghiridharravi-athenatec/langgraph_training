@@ -71,6 +71,13 @@ def create_refresh_token(user_id: str, token_version: int = 0) -> str:
     return _create_token(user_id, "refresh", token_version, timedelta(days=config.REFRESH_TOKEN_EXPIRE_DAYS))
 
 
+def create_password_reset_token(user_id: str) -> str:
+    '''Short-lived, single-purpose token emailed as a reset link. Its `ver` claim is
+    unused (reset doesn't check it - see decode_token's expected_type instead);
+    one-time-use is enforced separately via its jti (see mongo.is_password_reset_jti_used).'''
+    return _create_token(user_id, "password_reset", 0, timedelta(minutes=config.PASSWORD_RESET_TOKEN_EXPIRE_MINUTES))
+
+
 def decode_token(token: str, expected_type: str) -> Dict[str, Any]:
     try:
         payload = jwt.decode(token, _SECRET_KEY, algorithms=[config.JWT_ALGORITHM])

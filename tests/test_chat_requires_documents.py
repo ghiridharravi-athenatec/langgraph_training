@@ -40,7 +40,7 @@ def test_admin_gets_no_exemption_from_the_documents_check(client, admin_headers,
 def test_chat_proceeds_once_caller_has_ingested_a_document(client, admin_headers, admin_id, monkeypatch):
     monkeypatch.setattr(
         "app.api.v1.api.IntentClassifier.classify_intent",
-        lambda self, question: {"intent": "greetings", "confidence": 0.99, "guardrail_events": []},
+        lambda self, question, model=None: {"intent": "greetings", "confidence": 0.99, "guardrail_events": []},
     )
     seed_document(admin_id)
 

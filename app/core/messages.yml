@@ -1,0 +1,87 @@
+# User-facing guardrail/error message templates - the wording shown when a
+# question, upload, or database query gets blocked, so it's tunable in one
+# place without touching guardrail logic. Loaded by app/core/messages.py's
+# msg("dotted.path", **kwargs); never read directly elsewhere.
+#
+# Every value is a plain Python str.format() template - {placeholders} must
+# match exactly what each call site passes as keyword arguments.
+
+common:
+  # Shared wrapper for "a guardrail rejected this, here's why" - used for every
+  # blocked-request answer that has a specific underlying reason to surface.
+  blocked_prefix: "I can't process this: {reason}"
+
+input_validation:
+  too_short: "Your question looks empty or too short - add a bit more detail and try again."
+  too_long: "Your question is too long ({max} characters max) - try breaking it into smaller questions."
+  prompt_injection: "This looks like an attempt to override my instructions rather than a genuine question, so I can't process it."
+  blocked_keyword: "This question contains content I'm not able to help with."
+
+documents_check:
+  no_documents: "You haven't ingested any documents yet - upload one from the Data Ingestion tab before asking a question."
+
+quota_check:
+  exceeded: "You've used your full daily token quota ({used}/{quota}). It resets tomorrow, or ask an admin to raise your limit."
+
+intent_detection:
+  low_confidence: "I couldn't confidently tell what you're asking (confidence {confidence:.0%}, need at least {threshold:.0%}) - try rephrasing your question more directly."
+  blocked_answer: "I'm sorry, I couldn't confidently tell what you're asking. Could you rephrase your question?"
+
+model_safety:
+  blocked_prompt: "Model safety filter blocked the prompt: {block_reason}"
+  blocked_categories: "Model safety classifier flagged: {categories}"
+
+model_prompt_injection_check:
+  default_reason: "Model classified this prompt as a jailbreak/prompt-injection attempt."
+
+retrieval_validation:
+  no_chunks_at_all: "No relevant documents found for this question."
+  no_chunks_above_threshold: "No chunks met the minimum relevance score ({min_score})."
+  blocked_answer: "I couldn't find anything in your documents that's closely related to this question. Try rephrasing it, or confirm the right document has been uploaded."
+
+groundedness_check:
+  not_grounded: "Answer doesn't appear grounded in the retrieved context (similarity {score:.2f} below {min_score:.2f})."
+  blocked_answer: "I found an answer, but couldn't verify it's well-supported by your documents, so I'm not showing it. Try rephrasing your question to be more specific."
+
+output_validation:
+  empty_answer: "Empty answer generated."
+  blocked_keyword: "Generated answer contained disallowed content."
+  blocked_answer: "I generated a response, but it didn't pass a content check, so I can't show it. Try rephrasing your question."
+  url_stripped: "Removed link(s) to non-allowlisted domain(s): {domains}."
+  truncated: "Truncated to {max_length} characters."
+
+model_output_schema:
+  not_json: "Model response was not valid JSON: {error}"
+  not_object: "Model response was valid JSON but not a JSON object."
+  missing_fields: "Model response is missing required field(s): {fields}."
+  wrong_type: "Model response field(s) have the wrong type: {fields}."
+  blocked_answer: "I'm unable to provide a response to that request. Please try again."
+
+context_budget:
+  truncated: "Dropped {dropped} chunk(s) to stay within the ~{max_chars} character context budget."
+
+timeout:
+  blocked_answer: "This request took longer than expected and was stopped. Please try again."
+
+greeting:
+  response: "Hello! How can I assist you today? Ask me a question about any of the documents you've uploaded."
+
+pii:
+  skipped: "Skipped - blocked earlier"
+
+ingest:
+  invalid_text_encoding: "This file isn't valid UTF-8 text."
+  unsupported_extension: "Unsupported file extension '{ext}'. Must be one of: {supported}."
+  content_mismatch: "This file's content doesn't match its extension - expected a valid {label} file."
+  too_large: "File is {size_mb:.1f}MB, which exceeds the {max_mb}MB limit."
+
+db_agent:
+  no_answer: "I wasn't able to produce an answer."
+  tool_budget_exceeded: "I wasn't able to finish answering within the allotted number of tool calls - try asking a narrower question."
+  both_providers_failed: "I couldn't reach either language model provider to answer this - please try again shortly."
+
+db_query:
+  multi_statement: "Only a single statement is allowed per query."
+  not_select: "Only SELECT queries are allowed - this connection is read-only."
+  write_keyword: "Query contains a disallowed write/DDL keyword - this connection is read-only."
+  timeout: "Query timed out after {seconds}s."

@@ -4,28 +4,42 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pymongo.errors import DuplicateKeyError
 
 from app.core import config
+from app.core.email import send_password_reset_email
 from app.core.logger import get_logger
 from app.core.security import (
     create_access_token,
+    create_password_reset_token,
     create_refresh_token,
     decode_token,
     get_current_user,
     hash_password,
     verify_password,
 )
-from app.schemas.auth_schema import LoginRequest, MeResponse, TokenResponse, UserCreate
+from app.schemas.auth_schema import (
+    ChangePasswordRequest,
+    ForgotPasswordRequest,
+    LoginRequest,
+    MeResponse,
+    ResetPasswordRequest,
+    TokenResponse,
+    UserCreate,
+)
 from app.utils.mongo import (
     ROLE_USER,
     bump_token_version,
+    check_password_reset_rate_limit,
     create_user,
     get_login_lockout,
     get_user_by_email,
     get_user_by_id,
+    is_password_reset_jti_used,
     is_refresh_jti_used,
     list_permitted_project_ids,
+    mark_password_reset_jti_used,
     mark_refresh_jti_used,
     record_login_failure,
     reset_login_attempts,
+    set_user_password,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -125,6 +139,63 @@ def refresh(request: Request, response: Response):
 def logout(response: Response):
     response.delete_cookie(key=config.REFRESH_COOKIE_NAME, path="/api/v1/auth")
     return {"message": "Logged out"}
+
+
+_FORGOT_PASSWORD_RESPONSE = {"message": "If that email is registered, a password reset link has been sent."}
+
+
+@router.post("/forgot-password")
+def forgot_password(payload: ForgotPasswordRequest):
+    '''Always returns the same generic message - whether the email is unregistered,
+    rate-limited, or the send itself failed - so a caller can never distinguish
+    "no such account" from "account exists" (user enumeration).'''
+    if not check_password_reset_rate_limit(payload.email):
+        logger.warning("Password reset rate limit hit for %s", payload.email)
+        return _FORGOT_PASSWORD_RESPONSE
+
+    user = get_user_by_email(payload.email)
+    if user is None:
+        logger.info("Password reset requested for unregistered email %s", payload.email)
+        return _FORGOT_PASSWORD_RESPONSE
+
+    token = create_password_reset_token(user["_id"])
+    reset_link = f"{config.FRONTEND_ORIGIN}/reset-password?token={token}"
+    send_password_reset_email(user["email"], reset_link)
+    logger.info("Password reset link issued for %s", user["email"])
+    return _FORGOT_PASSWORD_RESPONSE
+
+
+@router.post("/reset-password")
+def reset_password(payload: ResetPasswordRequest):
+    token_payload = decode_token(payload.token, expected_type="password_reset")
+    if is_password_reset_jti_used(token_payload["jti"]):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="This reset link has already been used.")
+
+    user = get_user_by_id(token_payload["sub"])
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User no longer exists")
+
+    set_user_password(user["_id"], hash_password(payload.new_password))
+    mark_password_reset_jti_used(token_payload["jti"])
+    bump_token_version(user["_id"])  # revoke every existing session, including any stolen one
+    logger.info("Password reset completed for %s", user["email"])
+    return {"message": "Password has been reset. Please log in with your new password."}
+
+
+@router.post("/change-password", response_model=TokenResponse)
+def change_password(payload: ChangePasswordRequest, response: Response, current_user: dict = Depends(get_current_user)):
+    if not verify_password(payload.current_password, current_user["password_hash"]):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Current password is incorrect")
+
+    set_user_password(current_user["_id"], hash_password(payload.new_password))
+    bump_token_version(current_user["_id"])
+    logger.info("Password changed for %s", current_user["email"])
+
+    # bump_token_version above just invalidated the access token this request came in
+    # on - issue a fresh pair immediately so the caller's own session keeps working;
+    # every *other* outstanding session for this user is still revoked.
+    refreshed_user = get_user_by_id(current_user["_id"])
+    return _issue_tokens(response, refreshed_user)
 
 
 @router.get("/me", response_model=MeResponse)

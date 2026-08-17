@@ -247,6 +247,19 @@ export const GUARDRAIL_CHECKLIST = [
   },
 ];
 
+// The database chatbot reuses validate_input/validate_quota/validate_output
+// verbatim (see app/api/v1/database.py's POST /chat), so their events are the
+// exact same shape as the document pipeline's - only the retrieval-specific and
+// document-only checks (knowledge base, model safety, intent, cache, retrieval,
+// groundedness) don't apply, since there's no retrieval step to check.
+const DATABASE_CHECKLIST_IDS = [
+  "input.length", "input.prompt_injection_regex", "input.blocked_keywords", "input.pii_masking",
+  "quota_check",
+  "output.not_empty", "output.blocked_keywords", "output.pii_masking", "output.url_allowlist", "output.length_limit",
+];
+
+export const DATABASE_GUARDRAIL_CHECKLIST = GUARDRAIL_CHECKLIST.filter((item) => DATABASE_CHECKLIST_IDS.includes(item.id));
+
 export function groupChecklist(checklist = GUARDRAIL_CHECKLIST) {
   const groups = [];
   for (const item of checklist) {

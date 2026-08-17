@@ -11,10 +11,10 @@ def _grant(client, admin_headers, user_id, project_ids):
     assert resp.status_code == 200
 
 
-def _seed_conversation(user_id, question="hello", answer="hi there"):
-    conversation = create_conversation(user_id)
+def _seed_conversation(user_id, question="hello", answer="hi there", project_id="ragchatbot", **extra):
+    conversation = create_conversation(user_id, project_id)
     add_message(conversation["_id"], user_id, "user", question)
-    add_message(conversation["_id"], user_id, "assistant", answer, blocked=False, cached=False)
+    add_message(conversation["_id"], user_id, "assistant", answer, blocked=False, cached=False, **extra)
     return conversation
 
 
@@ -89,3 +89,61 @@ def test_admin_can_view_any_users_conversations_turns_and_messages(client, admin
         client.get(f"/api/v1/traces/conversations/{conversation['_id']}/messages", headers=admin_headers).status_code
         == 200
     )
+
+
+# ---------------------------------------------------------------------------
+# guardrail_events round-trip (database-chatbot turns) + project_id scoping
+# ---------------------------------------------------------------------------
+
+_TOOL_CALL_EVENTS = [{"stage": "db_agent_tool_call", "tool": "run_query", "passed": True, "reason": None}]
+
+
+def test_guardrail_events_round_trip_for_a_database_turn(client, admin_headers, user_headers, user_id):
+    _grant(client, admin_headers, user_id, ["guardrail-traces"])
+    conversation = _seed_conversation(
+        user_id, question="how many users", answer="42 users.",
+        project_id="database-chatbot", guardrail_events=_TOOL_CALL_EVENTS,
+    )
+
+    turns = client.get(f"/api/v1/traces/users/{user_id}/turns", headers=admin_headers).json()
+    turn = next(t for t in turns if t["conversation_id"] == conversation["_id"])
+    assert turn["guardrail_events"] == _TOOL_CALL_EVENTS
+    assert turn["graph_response"] is None
+
+    messages = client.get(
+        f"/api/v1/traces/conversations/{conversation['_id']}/messages", headers=admin_headers
+    ).json()
+    assert messages[1]["guardrail_events"] == _TOOL_CALL_EVENTS
+
+
+def test_project_id_filters_traced_user_conversation_count(client, admin_headers, admin_id):
+    _seed_conversation(admin_id, project_id="ragchatbot")
+    _seed_conversation(admin_id, project_id="database-chatbot")
+    _seed_conversation(admin_id, project_id="database-chatbot")
+
+    doc_users = client.get("/api/v1/traces/users", params={"project_id": "ragchatbot"}, headers=admin_headers).json()
+    db_users = client.get("/api/v1/traces/users", params={"project_id": "database-chatbot"}, headers=admin_headers).json()
+    all_users = client.get("/api/v1/traces/users", headers=admin_headers).json()
+
+    admin_row = lambda rows: next(u for u in rows if u["id"] == admin_id)
+    assert admin_row(doc_users)["conversation_count"] == 1
+    assert admin_row(db_users)["conversation_count"] == 2
+    assert admin_row(all_users)["conversation_count"] == 3
+
+
+def test_project_id_filters_traced_turns(client, admin_headers, admin_id):
+    _seed_conversation(admin_id, question="a document question", project_id="ragchatbot")
+    _seed_conversation(admin_id, question="a database question", project_id="database-chatbot")
+
+    db_turns = client.get(
+        f"/api/v1/traces/users/{admin_id}/turns", params={"project_id": "database-chatbot"}, headers=admin_headers
+    ).json()
+    assert [t["question"] for t in db_turns] == ["a database question"]
+
+    doc_turns = client.get(
+        f"/api/v1/traces/users/{admin_id}/turns", params={"project_id": "ragchatbot"}, headers=admin_headers
+    ).json()
+    assert [t["question"] for t in doc_turns] == ["a document question"]
+
+    all_turns = client.get(f"/api/v1/traces/users/{admin_id}/turns", headers=admin_headers).json()
+    assert {t["question"] for t in all_turns} == {"a document question", "a database question"}

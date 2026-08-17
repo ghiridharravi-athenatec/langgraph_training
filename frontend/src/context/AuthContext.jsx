@@ -51,6 +51,21 @@ export function AuthProvider({ children }) {
     [applySession]
   );
 
+  const changePassword = useCallback(
+    async (currentPassword, newPassword) => {
+      const { data } = await api.post("/auth/change-password", {
+        current_password: currentPassword,
+        new_password: newPassword,
+      });
+      // Backend revokes every other outstanding session on a successful change and
+      // returns a fresh token pair for this one - apply it so this session keeps
+      // working seamlessly instead of getting logged out by its own action.
+      applySession(data);
+      return data.user;
+    },
+    [applySession]
+  );
+
   const logout = useCallback(async () => {
     try {
       await api.post("/auth/logout");
@@ -73,6 +88,7 @@ export function AuthProvider({ children }) {
     isAdmin: user?.role === "admin",
     login,
     signup,
+    changePassword,
     logout,
     refreshUser,
   };

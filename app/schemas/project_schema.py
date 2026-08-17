@@ -1,5 +1,5 @@
 import re
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -60,3 +60,7 @@ class UserQuotaUpdate(BaseModel):
     '''None clears the user's override, falling back to the global default.'''
 
     daily_token_quota: Optional[int] = Field(None, ge=0)
+
+
+class UserRoleUpdate(BaseModel):
+    role: Literal["admin", "user"]

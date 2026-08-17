@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import api, { formatErrorDetail } from "../api/client";
 import AppShell from "../components/AppShell";
+import { useAuth } from "../context/AuthContext";
 
 export default function AdminUsers() {
+  const { user: currentUser } = useAuth();
   const [users, setUsers] = useState([]);
   const [projects, setProjects] = useState([]);
   const [status, setStatus] = useState("loading");
@@ -46,6 +48,24 @@ export default function AdminUsers() {
       // Roll back on failure.
       setUsers((prev) => prev.map((u) => (u.id === user.id ? { ...u, projects: user.projects } : u)));
       setError(formatErrorDetail(err, "Failed to update permission."));
+    } finally {
+      setSavingKey(null);
+    }
+  }
+
+  async function toggleRole(user) {
+    const nextRole = user.role === "admin" ? "user" : "admin";
+    const key = `role:${user.id}`;
+
+    setSavingKey(key);
+    setUsers((prev) => prev.map((u) => (u.id === user.id ? { ...u, role: nextRole } : u)));
+
+    try {
+      await api.put(`/admin/users/${user.id}/role`, { role: nextRole });
+    } catch (err) {
+      // Roll back on failure.
+      setUsers((prev) => prev.map((u) => (u.id === user.id ? { ...u, role: user.role } : u)));
+      setError(formatErrorDetail(err, "Failed to update role."));
     } finally {
       setSavingKey(null);
     }
@@ -133,8 +153,20 @@ export default function AdminUsers() {
               {users.map((user) => (
                 <tr key={user.id}>
                   <td>{user.email}</td>
-                  <td>
+                  <td className="role-cell">
                     <span className={`role-badge ${user.role === "admin" ? "role-badge-admin" : ""}`}>{user.role}</span>
+                    {currentUser?.id === user.id ? (
+                      <span className="muted role-toggle-hint">(you)</span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="btn-ghost role-toggle-btn"
+                        disabled={savingKey === `role:${user.id}`}
+                        onClick={() => toggleRole(user)}
+                      >
+                        {user.role === "admin" ? "Remove admin" : "Make admin"}
+                      </button>
+                    )}
                   </td>
                   {projects.map((project) => {
                     const key = `${user.id}:${project.id}`;

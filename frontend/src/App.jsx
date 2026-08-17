@@ -5,8 +5,12 @@ import AdminRoute from "./components/AdminRoute";
 import ProjectRoute from "./components/ProjectRoute";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
+import ForgotPassword from "./pages/ForgotPassword";
+import ResetPassword from "./pages/ResetPassword";
 import Dashboard from "./pages/Dashboard";
 import ProjectView from "./pages/ProjectView";
+import Instructions from "./pages/Instructions";
+import Account from "./pages/Account";
 import AdminUsers from "./pages/AdminUsers";
 import Forbidden from "./pages/Forbidden";
 import NotFound from "./pages/NotFound";
@@ -17,9 +21,13 @@ export default function App() {
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
+        <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
 
         <Route element={<ProtectedRoute />}>
           <Route path="/" element={<Dashboard />} />
+          <Route path="/instructions" element={<Instructions />} />
+          <Route path="/account" element={<Account />} />
           <Route path="/forbidden" element={<Forbidden />} />
 
           <Route element={<ProjectRoute />}>

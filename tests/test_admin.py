@@ -96,3 +96,41 @@ def test_repeated_grant_is_idempotent_not_duplicated(client, admin_headers, user
 
     check = client.get(f"/api/v1/admin/users/{user_id}/permissions", headers=admin_headers)
     assert check.json() == ["ragchatbot"]
+
+
+def test_admin_can_promote_user_to_admin(client, admin_headers, user_id, user_headers):
+    resp = client.put(f"/api/v1/admin/users/{user_id}/role", json={"role": "admin"}, headers=admin_headers)
+    assert resp.status_code == 200
+    assert resp.json()["role"] == "admin"
+
+    # Role isn't embedded in the JWT - the promoted user's existing access token
+    # picks it up on its very next request, no re-login needed.
+    me = client.get("/api/v1/auth/me", headers=user_headers)
+    assert me.json()["role"] == "admin"
+
+
+def test_admin_can_demote_another_admin(client, admin_headers, user_id):
+    client.put(f"/api/v1/admin/users/{user_id}/role", json={"role": "admin"}, headers=admin_headers)
+    resp = client.put(f"/api/v1/admin/users/{user_id}/role", json={"role": "user"}, headers=admin_headers)
+    assert resp.status_code == 200
+    assert resp.json()["role"] == "user"
+
+
+def test_admin_cannot_change_their_own_role(client, admin_headers, admin_id):
+    resp = client.put(f"/api/v1/admin/users/{admin_id}/role", json={"role": "user"}, headers=admin_headers)
+    assert resp.status_code == 400
+
+
+def test_update_role_for_unknown_user_404s(client, admin_headers):
+    resp = client.put("/api/v1/admin/users/no-such-user/role", json={"role": "admin"}, headers=admin_headers)
+    assert resp.status_code == 404
+
+
+def test_update_role_rejects_invalid_value(client, admin_headers, user_id):
+    resp = client.put(f"/api/v1/admin/users/{user_id}/role", json={"role": "superuser"}, headers=admin_headers)
+    assert resp.status_code == 422
+
+
+def test_non_admin_forbidden_from_role_route(client, user_headers, admin_id):
+    resp = client.put(f"/api/v1/admin/users/{admin_id}/role", json={"role": "user"}, headers=user_headers)
+    assert resp.status_code == 403

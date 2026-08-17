@@ -50,8 +50,13 @@ export default function Dashboard() {
 
       {status === "ready" && projects.length > 0 && (
         <div className="project-grid">
-          {projects.map((project) => (
-            <Link to={`/projects/${project.id}`} key={project.id} className="project-card">
+          {projects.map((project, i) => (
+            <Link
+              to={`/projects/${project.id}`}
+              key={project.id}
+              className="project-card"
+              style={{ animationDelay: `${i * 40}ms` }}
+            >
               <div className="project-card-icon">{project.name.charAt(0).toUpperCase()}</div>
               <div className="project-card-name">{project.name}</div>
               <div className="project-card-desc">{project.description || "No description provided."}</div>

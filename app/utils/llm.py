@@ -1,12 +1,8 @@
-from google import genai
-from google.genai import types
+from app.core import llm_provider
 from app.core.logger import get_logger
 from app.core.guardrails import (
-    build_safety_settings,
-    evaluate_model_safety,
     evaluate_llm_injection_verdict,
     validate_json_schema,
-    extract_token_count,
     INJECTION_DETECTION_INSTRUCTIONS,
     INJECTION_DETECTION_SCHEMA_FIELDS,
 )
@@ -16,10 +12,7 @@ logger = get_logger(__name__)
 
 class IntentClassifier:
 
-    def __init__(self, api_key: str):
-        self.client = genai.Client(api_key=api_key)
-
-    def classify_intent(self, user_prompt: str) -> dict:
+    def classify_intent(self, user_prompt: str, model: str = None) -> dict:
 
         prompt = f"""
                     You are an intent classification and prompt-safety model for a general-purpose
@@ -53,33 +46,30 @@ class IntentClassifier:
                     "{user_prompt}"
                     """
 
-        response = self.client.models.generate_content(
-            model="gemini-3.1-flash-lite",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0,
-                max_output_tokens=300,
-                response_mime_type="application/json",
-                safety_settings=build_safety_settings(),
-            )
-        )
+        result = llm_provider.generate_json(prompt, max_tokens=300, stage="model_input_validation", model=model)
 
-        token_count = extract_token_count(response)
-
-        # Model-based safety check, piggybacked on this same call (no extra round-trip)
-        safety_event = evaluate_model_safety(response, stage="model_input_validation")
+        # Model-based safety check (real inspection on Gemini, a deliberate
+        # pass-through on Claude - see llm_provider.py's module docstring)
+        safety_event = result.safety_event
         if not safety_event["passed"]:
-            return {"intent": "blocked", "confidence": 0.0, "guardrail_events": [safety_event], "token_count": token_count}
+            return {
+                "intent": "blocked",
+                "confidence": 0.0,
+                "guardrail_events": [safety_event],
+                "token_count": result.token_count,
+                "logs": [result.log],
+            }
 
         schema_event = validate_json_schema(
-            response.text, {"intent": str, "confidence": (int, float)}, stage="intent_output_schema"
+            result.text, {"intent": str, "confidence": (int, float)}, stage="intent_output_schema"
         )
         if not schema_event["passed"]:
             return {
                 "intent": "default",
                 "confidence": 0.0,
                 "guardrail_events": [safety_event, schema_event],
-                "token_count": token_count,
+                "token_count": result.token_count,
+                "logs": [result.log],
             }
 
         # Copy rather than reuse schema_event["parsed"] directly - see the matching comment
@@ -92,5 +82,6 @@ class IntentClassifier:
         )
 
         parsed["guardrail_events"] = [safety_event, schema_event, injection_event]
-        parsed["token_count"] = token_count
+        parsed["token_count"] = result.token_count
+        parsed["logs"] = [result.log]
         return parsed
