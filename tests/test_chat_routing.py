@@ -7,7 +7,7 @@ its connection-management endpoints require the new database-chatbot grant
 instead of ragchatbot.
 '''
 
-from tests.conftest import seed_document
+from tests.conftest import parse_sse_response, seed_document
 
 
 def _classify_question(self, question, model=None):
@@ -35,7 +35,7 @@ def test_chat_ignores_database_connections_entirely(client, admin_headers, monke
 
     resp = client.post("/api/v1/chat", json={"question": "how many work orders are open"}, headers=admin_headers)
     assert resp.status_code == 200
-    events = resp.json()["graph_response"]["guardrail_events"]
+    events = parse_sse_response(resp)["graph_response"]["guardrail_events"]
     documents_event = next(e for e in events if e["stage"] == "documents_check")
     assert documents_event["passed"] is False
     assert not any(e["stage"] == "chat_source_routing" for e in events)
@@ -61,7 +61,7 @@ def test_chat_answers_from_documents_when_a_database_is_also_connected(client, a
 
     resp = client.post("/api/v1/chat", json={"question": "what does the manual say"}, headers=admin_headers)
     assert resp.status_code == 200
-    assert resp.json()["answer"] == "doc answer"
+    assert parse_sse_response(resp)["answer"] == "doc answer"
 
 
 def test_database_endpoints_require_database_chatbot_grant_not_ragchatbot(client, admin_headers, user_headers, user_id):

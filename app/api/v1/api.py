@@ -6,6 +6,7 @@ from datetime import date
 from typing import Optional
 from fastapi import FastAPI, APIRouter, Depends
 from fastapi import UploadFile, File, Form, HTTPException
+from fastapi.responses import StreamingResponse
 from pathlib import Path
 import uuid, os
 from app.utils.mongo import (
@@ -23,7 +24,7 @@ from app.schemas.retrieval_schema import QAResponse
 from app.utils.llm import IntentClassifier
 from dotenv import load_dotenv
 from app.utils.retrieve import compiled_graph, embedding_model, invalidate_bm25_cache
-from app.core import config, guardrail_config
+from app.core import config, guardrail_config, progress
 from app.core.logger import get_logger
 from app.core.guardrails import validate_input, validate_has_documents, evaluate_intent_detection, validate_quota
 from app.core.ingest_guardrails import validate_file_size, validate_file_type
@@ -32,6 +33,7 @@ from app.schemas.guardrail_config_schema import KNOWN_PII_ENTITIES
 from app.core.rate_limit import rate_limit
 from app.core.security import require_project_access
 from app.core.semantic_cache import find_cache_match
+from app.core.streaming import stream_answer
 from app.api.v1.auth import router as auth_router
 from app.api.v1.admin import router as admin_router
 from app.api.v1.conversations import conversations_router, database_conversations_router
@@ -40,6 +42,7 @@ from app.api.v1.database import router as database_router
 from app.api.v1.projects import router as projects_router
 from app.api.v1.traces import router as traces_router
 from app.api.v1.guardrail_settings import router as guardrail_settings_router
+from app.api.v1.progress import router as progress_router
 
 router = APIRouter()
 load_dotenv()
@@ -54,6 +57,7 @@ router.include_router(database_router)
 router.include_router(projects_router)
 router.include_router(traces_router)
 router.include_router(guardrail_settings_router)
+router.include_router(progress_router)
 
 app = FastAPI(title="My FastAPI App")
 absolute_path = os.path.abspath(".")
@@ -236,7 +240,11 @@ def _persist_turn(
     response_time_ms = round((time.perf_counter() - start_time) * 1000, 1)
     response["conversation_id"] = conversation_id
     response["response_time_ms"] = response_time_ms
-    add_message(conversation_id, user_id, "user", question)
+    question_message = add_message(conversation_id, user_id, "user", question)
+    # The question message's own id doubles as this turn's id everywhere else
+    # (TraceTurnOut.id, GET /traces/turns/{turn_id}) - returned here so the chat
+    # screen's "View Trace" link knows which turn to deep-link to.
+    response["turn_id"] = question_message["_id"]
     add_message(
         conversation_id, user_id, "assistant", response.get("answer", ""),
         question=question,
@@ -248,19 +256,19 @@ def _persist_turn(
         cache_similarity=cache_similarity,
         cache_source_message_id=cache_source_message_id,
         response_time_ms=response_time_ms,
+        turn_id=question_message["_id"],
     )
     touch_conversation(conversation_id, first_question=question)
 
 
-@router.post("/chat")
-async def chat_with_document(
-    state: QAResponse,
-    current_user: dict = Depends(_require_ragchatbot_access),
-    _rate_limit_check: dict = Depends(_chat_rate_limit),
-):
+async def _generate_chat_response(state: QAResponse, current_user: dict) -> dict:
+    '''Everything /chat used to do directly - unchanged. Split out so the route
+    handler below can stream the finished, already-guardrail-checked response back
+    in chunks (see app/core/streaming.py) instead of returning it all at once.'''
     start = time.perf_counter()
     try:
         logger.info("Received chat request: question=%r", state.question)
+        progress.start(state.request_id)
         original_question = state.question
         # Overwrite unconditionally - a client-supplied user_id could otherwise be used
         # to read another user's ingested documents through retrieval's pre_filter.
@@ -330,6 +338,7 @@ async def chat_with_document(
             _persist_turn(conversation_id, current_user["_id"], original_question, response, blocked=True, start_time=start)
             return response
 
+        progress.update(state.request_id, "Understanding your question…")
         classifier = IntentClassifier()
         result, timeout_event = await _run_with_timeout(
             classifier.classify_intent, state.question, model=state.model, stage="intent_classification"
@@ -452,3 +461,19 @@ async def chat_with_document(
     except Exception as e:
         logger.exception("Error while handling chat request: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        progress.finish(state.request_id)
+
+
+@router.post("/chat")
+async def chat_with_document(
+    state: QAResponse,
+    current_user: dict = Depends(_require_ragchatbot_access),
+    _rate_limit_check: dict = Depends(_chat_rate_limit),
+):
+    response = await _generate_chat_response(state, current_user)
+    return StreamingResponse(
+        stream_answer(response),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

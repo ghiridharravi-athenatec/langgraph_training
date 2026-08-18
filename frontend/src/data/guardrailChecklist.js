@@ -145,6 +145,16 @@ export const GUARDRAIL_CHECKLIST = [
     resolve: (events) => stageCheck(events, "intent_detection"),
   },
   {
+    id: "topic_restriction",
+    label: "Topic restriction",
+    group: "Model (input)",
+    category: "Input",
+    type: "Model-based",
+    description:
+      "When an admin configures an approved-topics list, rides on the intent-classification call to judge whether the question's subject matter falls within it. Shows as not run unless topics are configured.",
+    resolve: (events) => stageCheck(events, "topic_restriction"),
+  },
+  {
     id: "semantic_cache",
     label: "Similar question cache",
     group: "Cache",
@@ -169,7 +179,7 @@ export const GUARDRAIL_CHECKLIST = [
     group: "Retrieval",
     category: "Retrieval",
     type: "Deterministic",
-    description: "Trims retrieved chunks to stay within a ~16,000 character context budget, dropping the lowest-ranked chunks first.",
+    description: "Trims retrieved chunks to stay within a ~128,000 character context budget, dropping the lowest-ranked chunks first.",
     resolve: (events) => stageCheck(events, "context_budget"),
   },
   {
@@ -201,6 +211,16 @@ export const GUARDRAIL_CHECKLIST = [
     resolve: (events) => stageCheck(events, "groundedness_check"),
   },
   {
+    id: "bias_detection",
+    label: "Bias detection",
+    group: "Answer quality",
+    category: "Output",
+    type: "Model-based",
+    description:
+      "Asks the model to self-report whether its own answer shows unfair characterization by a protected attribute, riding on the answer-generation call. Admin-toggleable.",
+    resolve: (events) => stageCheck(events, "bias_detection"),
+  },
+  {
     id: "output.not_empty",
     label: "Answer not empty",
     group: "Output",
@@ -217,6 +237,16 @@ export const GUARDRAIL_CHECKLIST = [
     type: "Deterministic",
     description: "Scans the generated answer against the same denylist used on input.",
     resolve: (events) => subCheck(events, "output_validation", "blocked_keywords"),
+  },
+  {
+    id: "output.compliance_validation",
+    label: "Compliance validation",
+    group: "Output",
+    category: "Output",
+    type: "Deterministic",
+    description:
+      "Scans the generated answer for definitive regulated-claim phrases (e.g. guaranteed returns, guaranteed cures) that shouldn't be stated without review.",
+    resolve: (events) => subCheck(events, "output_validation", "compliance_validation"),
   },
   {
     id: "output.pii_masking",
@@ -245,6 +275,16 @@ export const GUARDRAIL_CHECKLIST = [
     description: "Truncates any answer over 6,000 characters.",
     resolve: (events) => subCheck(events, "output_validation", "length_limit"),
   },
+  {
+    id: "output.tone_check",
+    label: "Tone calibration",
+    group: "Output",
+    category: "Output",
+    type: "Deterministic",
+    description:
+      "Flags (without blocking) informal phrasing — shouting punctuation or slang — that drifts from a professional tone. Admin-toggleable.",
+    resolve: (events) => subCheck(events, "output_validation", "tone_check"),
+  },
 ];
 
 // The database chatbot reuses validate_input/validate_quota/validate_output
@@ -255,7 +295,8 @@ export const GUARDRAIL_CHECKLIST = [
 const DATABASE_CHECKLIST_IDS = [
   "input.length", "input.prompt_injection_regex", "input.blocked_keywords", "input.pii_masking",
   "quota_check",
-  "output.not_empty", "output.blocked_keywords", "output.pii_masking", "output.url_allowlist", "output.length_limit",
+  "output.not_empty", "output.blocked_keywords", "output.compliance_validation", "output.pii_masking",
+  "output.url_allowlist", "output.length_limit", "output.tone_check",
 ];
 
 export const DATABASE_GUARDRAIL_CHECKLIST = GUARDRAIL_CHECKLIST.filter((item) => DATABASE_CHECKLIST_IDS.includes(item.id));

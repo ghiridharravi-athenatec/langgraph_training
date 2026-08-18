@@ -54,7 +54,10 @@
       "Bash(PYTHONPATH=\".\" .venv/Scripts/python.exe \"C:\\\\Users\\\\GHIRID~1\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-Ghiridhar-Ravi-Documents-langgraph-training\\\\3f6211f5-834d-449f-9e26-8e1e7537a616\\\\scratchpad\\\\verify_nonblocking.py\")",
       "Bash(npx vite *)",
       "Bash(git stash *)",
-      "Bash(node *)"
+      "Bash(node *)",
+      "WebFetch(domain:www.llmatscale.ai)",
+      "Bash(powershell -NoProfile -Command \"Get-CimInstance Win32_Process -Filter 'ProcessId=26128' | Select-Object ProcessId,Name,CommandLine,ExecutablePath | Format-List\" 2>&1)",
+      "WebFetch(domain:rbac-1-two.vercel.app)"
     ]
   }
 }

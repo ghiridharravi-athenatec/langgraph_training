@@ -2,7 +2,7 @@ from datetime import date
 
 from app.core import config
 from app.utils.mongo import increment_usage
-from tests.conftest import seed_document
+from tests.conftest import parse_sse_response, seed_document
 
 
 def _grant_ragchatbot(client, admin_headers, user_id):
@@ -25,7 +25,7 @@ def test_user_blocked_once_daily_quota_exhausted(client, admin_headers, user_hea
     increment_usage(user_id, date.today().isoformat(), config.DAILY_TOKEN_QUOTA)
 
     resp = client.post("/api/v1/chat", json={"question": "hello there"}, headers=user_headers)
-    body = resp.json()
+    body = parse_sse_response(resp)
     assert resp.status_code == 200  # quota block is a normal chat response, not an HTTP error
     assert body["message"] == "Request blocked by quota"
     events = body["graph_response"]["guardrail_events"]
@@ -45,7 +45,7 @@ def test_admin_blocked_by_quota_like_any_user(client, admin_headers, monkeypatch
     increment_usage(me["id"], date.today().isoformat(), config.DAILY_TOKEN_QUOTA)
 
     resp = client.post("/api/v1/chat", json={"question": "hello there"}, headers=admin_headers)
-    body = resp.json()
+    body = parse_sse_response(resp)
     assert resp.status_code == 200
     assert body["message"] == "Request blocked by quota"
 
@@ -69,7 +69,7 @@ def test_admin_can_raise_own_quota_override(client, admin_headers, monkeypatch):
 
     resp = client.post("/api/v1/chat", json={"question": "hello there"}, headers=admin_headers)
     assert resp.status_code == 200
-    assert resp.json()["message"] == "Chat completed successfully"
+    assert parse_sse_response(resp)["message"] == "Chat completed successfully"
 
 
 def test_admin_can_set_per_user_quota_for_another_user(client, admin_headers, user_headers, user_id, monkeypatch):
@@ -89,7 +89,7 @@ def test_admin_can_set_per_user_quota_for_another_user(client, admin_headers, us
     assert resp.status_code == 200
 
     resp = client.post("/api/v1/chat", json={"question": "hello there"}, headers=user_headers)
-    body = resp.json()
+    body = parse_sse_response(resp)
     assert resp.status_code == 200
     assert body["message"] == "Request blocked by quota"
 
@@ -105,4 +105,4 @@ def test_usage_below_quota_passes(client, admin_headers, user_headers, user_id, 
 
     resp = client.post("/api/v1/chat", json={"question": "hello there"}, headers=user_headers)
     assert resp.status_code == 200
-    assert resp.json()["message"] == "Chat completed successfully"
+    assert parse_sse_response(resp)["message"] == "Chat completed successfully"

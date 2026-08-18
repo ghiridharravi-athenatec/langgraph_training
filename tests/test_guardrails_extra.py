@@ -1,5 +1,8 @@
+from app.core import guardrail_config
 from app.core.guardrails import (
     _redact_urls,
+    evaluate_bias_detection,
+    evaluate_topic_restriction,
     extract_token_count,
     validate_context_budget,
     validate_groundedness,
@@ -134,3 +137,64 @@ def test_output_validation_reports_url_allowlist_check():
     assert url_check["passed"] is True  # non-blocking
     assert "random-domain.test" in url_check["reason"]
     assert "[LINK REMOVED]" in result["sanitized_answer"]
+
+
+def test_evaluate_topic_restriction_blocks_out_of_scope():
+    event = evaluate_topic_restriction(False, "unrelated to approved topics")
+    assert event["passed"] is False
+    assert event["reason"] == "unrelated to approved topics"
+
+
+def test_evaluate_topic_restriction_uses_default_reason_when_missing():
+    event = evaluate_topic_restriction(False, None)
+    assert event["passed"] is False
+    assert event["reason"]
+
+
+def test_evaluate_topic_restriction_passes_in_scope():
+    event = evaluate_topic_restriction(True, None)
+    assert event["passed"] is True
+    assert event["reason"] is None
+
+
+def test_evaluate_bias_detection_blocks_flagged_answer():
+    event = evaluate_bias_detection(True, "stereotyped by nationality")
+    assert event["passed"] is False
+    assert event["reason"] == "stereotyped by nationality"
+
+
+def test_evaluate_bias_detection_passes_unflagged_answer():
+    event = evaluate_bias_detection(False, None)
+    assert event["passed"] is True
+
+
+def test_output_validation_blocks_compliance_keyword():
+    # Mutates the in-process cache directly (not update_config, which persists to
+    # Mongo) - the autouse _reset_guardrail_config_cache fixture in conftest.py
+    # resets this back to DEFAULTS after the test, same as other direct-cache tests.
+    original = guardrail_config.get_config()
+    guardrail_config._cache = {**original, "compliance_keywords": original["compliance_keywords"] + ["guaranteed returns"]}
+    result = validate_output("This fund offers guaranteed returns on your investment.")
+    assert result["passed"] is False
+    compliance_check = next(c for c in result["checks"] if c["check"] == "compliance_validation")
+    assert compliance_check["passed"] is False
+
+
+def test_output_validation_passes_without_compliance_keyword():
+    result = validate_output("This is a plain, unremarkable answer.")
+    compliance_check = next(c for c in result["checks"] if c["check"] == "compliance_validation")
+    assert compliance_check["passed"] is True
+
+
+def test_output_validation_flags_tone_without_blocking():
+    result = validate_output("OMG this is amazing!! You gonna love it!!")
+    tone_check = next(c for c in result["checks"] if c["check"] == "tone_check")
+    assert tone_check["passed"] is True  # non-blocking
+    assert tone_check["reason"] is not None
+    assert result["passed"] is True
+
+
+def test_output_validation_skips_tone_check_when_disabled():
+    guardrail_config._cache = {**guardrail_config.get_config(), "tone_calibration_enabled": False}
+    result = validate_output("OMG this is amazing!! You gonna love it!!")
+    assert not any(c["check"] == "tone_check" for c in result["checks"])

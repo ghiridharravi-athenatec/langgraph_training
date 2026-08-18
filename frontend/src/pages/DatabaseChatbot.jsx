@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import api, { formatErrorDetail } from "../api/client";
+import api, { formatErrorDetail, streamChat } from "../api/client";
 import DatabaseIngestPanel from "../components/DatabaseIngestPanel";
 import ModelPicker from "../components/ModelPicker";
 import ThinkingIndicator from "../components/ThinkingIndicator";
@@ -27,7 +27,7 @@ const THINKING_MESSAGES = [
 ];
 
 export default function DatabaseChatbot() {
-  const { user, logout } = useAuth();
+  const { user, logout, isAdmin } = useAuth();
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeSection, setActiveSection] = useState("chat");
@@ -39,11 +39,21 @@ export default function DatabaseChatbot() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [liveStage, setLiveStage] = useState("");
+  const [pendingTraceTurnId, setPendingTraceTurnId] = useState(null);
 
   const [connections, setConnections] = useState([]);
   const [hasConnections, setHasConnections] = useState(null); // null = not checked yet, so the banner never flashes
   const [selectedConnectionId, setSelectedConnectionId] = useState("");
   const [selectedModel, setSelectedModel] = useState("sonnet");
+
+  // True when the open conversation is pinned to a connection that's since been
+  // deleted - the input gets disabled instead of letting the user hit a confusing
+  // 404 after Send. activeConversation is undefined for a brand-new chat, so this
+  // is always false there.
+  const activeConversation = conversations.find((c) => c.id === activeConversationId);
+  const activeConnectionMissing =
+    !!activeConversation?.connection_id && !connections.some((c) => c.id === activeConversation.connection_id);
 
   const scrollRef = useRef(null);
 
@@ -103,6 +113,7 @@ export default function DatabaseChatbot() {
           content: m.content,
           response_time_ms: m.response_time_ms,
           guardrail_events: m.guardrail_events,
+          turn_id: m.turn_id,
         }))
       );
     } catch {
@@ -113,6 +124,16 @@ export default function DatabaseChatbot() {
   function startNewChat() {
     setActiveConversationId(null);
     setMessages([]);
+    // Re-validate against currently loaded connections - openConversation may have
+    // left this pointed at a connection that's since been deleted (see
+    // activeConnectionMissing), and unlike handleConnectionsChanged this wasn't
+    // re-checked just because the conversation changed.
+    setSelectedConnectionId((prev) => (prev && connections.some((c) => c.id === prev) ? prev : connections[0]?.id || ""));
+  }
+
+  function viewTrace(turnId) {
+    setPendingTraceTurnId(turnId);
+    setActiveSection("tracing");
   }
 
   async function deleteConversationById(e, conversationId) {
@@ -131,38 +152,88 @@ export default function DatabaseChatbot() {
   async function handleSend(e) {
     e.preventDefault();
     const question = input.trim();
-    if (!question || sending || !selectedConnectionId) return;
+    if (!question || sending || !selectedConnectionId || activeConnectionMissing) return;
 
     setMessages((prev) => [...prev, { role: "user", content: question }]);
     setInput("");
     setSending(true);
+    setLiveStage("");
+
+    // Polled while the request is in flight - GET /progress/{request_id} reports
+    // whichever pipeline/agent stage last ran (see app/core/progress.py), so the
+    // "thinking" indicator reflects real backend progress instead of just
+    // cycling a fixed list on a timer.
+    const requestId = crypto.randomUUID();
+    const pollId = setInterval(async () => {
+      try {
+        const { data } = await api.get(`/progress/${requestId}`);
+        if (data.stage) setLiveStage(data.stage);
+      } catch {
+        // Non-critical - the fallback cycling text just keeps showing.
+      }
+    }, 600);
+
+    // Once the full answer is generated and has passed every guardrail
+    // server-side, it's streamed back in small chunks purely for a typewriter
+    // reveal - see app/core/streaming.py for why this isn't raw generation-time
+    // token streaming. streamStarted flips the moment the first chunk arrives,
+    // swapping the ThinkingIndicator for a growing assistant bubble.
+    let streamStarted = false;
 
     try {
-      const { data } = await api.post("/database/chat", {
-        question,
-        conversation_id: activeConversationId,
-        connection_id: selectedConnectionId,
-        model: selectedModel,
-      });
-      setMessages((prev) => [
-        ...prev,
+      const data = await streamChat(
+        "/database/chat",
         {
-          role: "assistant",
-          content: data.answer || "No answer received.",
-          response_time_ms: data.response_time_ms,
-          guardrail_events: data.guardrail_events,
+          question,
+          conversation_id: activeConversationId,
+          connection_id: selectedConnectionId,
+          model: selectedModel,
+          request_id: requestId,
         },
-      ]);
+        {
+          onDelta: (text) => {
+            setMessages((prev) => {
+              if (!streamStarted) {
+                streamStarted = true;
+                return [...prev, { role: "assistant", content: text, streaming: true }];
+              }
+              const next = [...prev];
+              const last = next[next.length - 1];
+              next[next.length - 1] = { ...last, content: last.content + text };
+              return next;
+            });
+          },
+        }
+      );
+
+      const finalMessage = {
+        role: "assistant",
+        content: data.answer || "No answer received.",
+        response_time_ms: data.response_time_ms,
+        guardrail_events: data.guardrail_events,
+        turn_id: data.turn_id,
+      };
+      setMessages((prev) => {
+        if (!streamStarted) return [...prev, finalMessage];
+        const next = [...prev];
+        next[next.length - 1] = finalMessage;
+        return next;
+      });
       if (data.conversation_id && data.conversation_id !== activeConversationId) {
         setActiveConversationId(data.conversation_id);
       }
       loadConversations();
     } catch (err) {
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: `Error: ${formatErrorDetail(err, "Failed to reach the backend.")}` },
-      ]);
+      const errorMessage = { role: "assistant", content: `Error: ${formatErrorDetail(err, "Failed to reach the backend.")}` };
+      setMessages((prev) => {
+        if (!streamStarted) return [...prev, errorMessage];
+        const next = [...prev];
+        next[next.length - 1] = errorMessage;
+        return next;
+      });
     } finally {
+      clearInterval(pollId);
+      setLiveStage("");
       setSending(false);
     }
   }
@@ -250,6 +321,14 @@ export default function DatabaseChatbot() {
                     </div>
                   )}
 
+                  {activeConnectionMissing && (
+                    <div className="chat-disclaimer">
+                      This conversation's database connection has been removed — you can still read the history
+                      below, but can't ask anything new here. Start a <strong>New chat</strong> and pick an active
+                      connection instead.
+                    </div>
+                  )}
+
                   {messages.length === 0 && (
                     <div className="chat-empty">
                       <div className="chat-empty-mark">✦</div>
@@ -274,11 +353,18 @@ export default function DatabaseChatbot() {
                           {formatResponseTime(msg.response_time_ms)}
                         </span>
                       )}
+                      {isAdmin && msg.role === "assistant" && msg.turn_id && (
+                        <button type="button" className="chat-logs-toggle" onClick={() => viewTrace(msg.turn_id)}>
+                          View Trace
+                        </button>
+                      )}
                       {msg.role === "assistant" && <ToolCallLog events={msg.guardrail_events} />}
                     </div>
                   ))}
 
-                  {sending && <ThinkingIndicator messages={THINKING_MESSAGES} />}
+                  {sending && !messages[messages.length - 1]?.streaming && (
+                    <ThinkingIndicator messages={THINKING_MESSAGES} liveStage={liveStage} />
+                  )}
                 </div>
               </div>
 
@@ -308,13 +394,19 @@ export default function DatabaseChatbot() {
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     placeholder={
-                      hasConnections === false
+                      activeConnectionMissing
+                        ? "This conversation's database connection was removed…"
+                        : hasConnections === false
                         ? "Connect a database before you can ask a question…"
                         : "Ask a question about the selected database…"
                     }
-                    disabled={sending || !selectedConnectionId}
+                    disabled={sending || !selectedConnectionId || activeConnectionMissing}
                   />
-                  <button type="submit" className="btn-primary" disabled={sending || !selectedConnectionId || !input.trim()}>
+                  <button
+                    type="submit"
+                    className="btn-primary"
+                    disabled={sending || !selectedConnectionId || !input.trim() || activeConnectionMissing}
+                  >
                     Send
                   </button>
                 </div>
@@ -335,7 +427,13 @@ export default function DatabaseChatbot() {
           </div>
         )}
 
-        {activeSection === "tracing" && <TracingTab projectId="database-chatbot" />}
+        {activeSection === "tracing" && (
+          <TracingTab
+            projectId="database-chatbot"
+            initialTurnId={pendingTraceTurnId}
+            onConsumedInitialTurn={() => setPendingTraceTurnId(null)}
+          />
+        )}
       </main>
     </div>
   );

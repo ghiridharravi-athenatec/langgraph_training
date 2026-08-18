@@ -492,7 +492,20 @@ def add_message(conversation_id: str, user_id: str, role: str, content: str, db_
 
 
 def list_messages(conversation_id: str, db_name: str = DB_NAME) -> List[Dict[str, Any]]:
-    return list(get_messages_collection(db_name).find({"conversation_id": conversation_id}).sort("created_at", 1))
+    '''Every caller gets turn_id on assistant messages, even ones persisted before that
+    field existed - backfilled here by pairing with the preceding user message in this
+    same list, rather than requiring a data migration or leaving old turns unable to
+    deep-link via "View Trace"/GET /traces/turns/{turn_id}.'''
+    messages = list(get_messages_collection(db_name).find({"conversation_id": conversation_id}).sort("created_at", 1))
+
+    pending_question_id = None
+    for message in messages:
+        if message["role"] == "user":
+            pending_question_id = message["_id"]
+        elif message["role"] == "assistant" and message.get("turn_id") is None:
+            message["turn_id"] = pending_question_id
+
+    return messages
 
 
 def get_conversation_history(conversation_id: str, max_turns: int, db_name: str = DB_NAME) -> List[Dict[str, str]]:
@@ -597,23 +610,54 @@ def list_user_turns(
         if message["role"] == "user":
             pending_question = message
         elif message["role"] == "assistant" and pending_question is not None:
-            turns.append({
-                "_id": pending_question["_id"],
-                "conversation_id": message["conversation_id"],
-                "question": pending_question["content"],
-                "answer": message["content"],
-                "created_at": pending_question["created_at"],
-                "logs": message.get("logs"),
-                "graph_response": message.get("graph_response"),
-                "guardrail_events": message.get("guardrail_events"),
-                "cached": message.get("cached"),
-                "blocked": message.get("blocked"),
-                "response_time_ms": message.get("response_time_ms"),
-            })
+            turns.append(_turn_dict(pending_question, message))
             pending_question = None
 
     turns.sort(key=lambda t: t["created_at"], reverse=True)
     return turns[:limit]
+
+
+def _turn_dict(question_message: Dict[str, Any], answer_message: Dict[str, Any]) -> Dict[str, Any]:
+    '''Shared by list_user_turns (every turn, for the trace list) and get_trace_turn
+    (one turn, for deep-linking straight from a chat answer's "View Trace" link) -
+    same Q&A-pair shape either way.'''
+    return {
+        "_id": question_message["_id"],
+        "conversation_id": answer_message["conversation_id"],
+        "user_id": question_message["user_id"],
+        "question": question_message["content"],
+        "answer": answer_message["content"],
+        "created_at": question_message["created_at"],
+        "logs": answer_message.get("logs"),
+        "graph_response": answer_message.get("graph_response"),
+        "guardrail_events": answer_message.get("guardrail_events"),
+        "cached": answer_message.get("cached"),
+        "blocked": answer_message.get("blocked"),
+        "response_time_ms": answer_message.get("response_time_ms"),
+    }
+
+
+def get_trace_turn(turn_id: str, db_name: str = DB_NAME) -> Optional[Dict[str, Any]]:
+    '''Single turn lookup by the user message's _id - the same id TraceTurnOut.id
+    and MessageOut.turn_id use everywhere else - for deep-linking straight from a
+    chat answer's "View Trace" link to its trace, without fetching every turn the
+    user has ever had just to find one.'''
+    question_message = get_messages_collection(db_name).find_one({"_id": turn_id, "role": "user"})
+    if question_message is None:
+        return None
+
+    conversation_messages = list_messages(question_message["conversation_id"], db_name)
+    index = next((i for i, m in enumerate(conversation_messages) if m["_id"] == turn_id), None)
+    if index is None:
+        return None
+
+    answer_message = next(
+        (m for m in conversation_messages[index + 1:] if m["role"] == "assistant"), None
+    )
+    if answer_message is None:
+        return None
+
+    return _turn_dict(question_message, answer_message)
 
 
 def list_cache_candidates(user_id: str, limit: int, db_name: str = DB_NAME) -> List[Dict[str, Any]]:

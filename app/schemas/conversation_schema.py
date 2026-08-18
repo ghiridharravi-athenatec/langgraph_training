@@ -31,3 +31,7 @@ class MessageOut(BaseModel):
     # (which tables/queries it ran) plus any blocking guardrail events for that turn.
     guardrail_events: Optional[List[Any]] = None
     created_at: datetime
+    # Only set on assistant messages - the id of the user message that asked the
+    # question this answered, i.e. the same id TraceTurnOut.id uses for this turn.
+    # Powers the chat screen's "View Trace" link (GET /traces/turns/{turn_id}).
+    turn_id: Optional[str] = None

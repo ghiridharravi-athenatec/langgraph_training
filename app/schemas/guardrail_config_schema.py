@@ -34,6 +34,10 @@ class GuardrailConfigOut(BaseModel):
     min_groundedness_score: float
     allowed_url_domains: List[str]
     max_answer_length: int
+    allowed_topics: List[str]
+    compliance_keywords: List[str]
+    bias_detection_enabled: bool
+    tone_calibration_enabled: bool
 
 
 def _clean_list(values: List[str]) -> List[str]:
@@ -65,8 +69,12 @@ class GuardrailConfigUpdate(BaseModel):
     min_groundedness_score: Optional[float] = Field(None, ge=0, le=1)
     allowed_url_domains: Optional[List[str]] = None
     max_answer_length: Optional[int] = Field(None, ge=100, le=50000)
+    allowed_topics: Optional[List[str]] = None
+    compliance_keywords: Optional[List[str]] = None
+    bias_detection_enabled: Optional[bool] = None
+    tone_calibration_enabled: Optional[bool] = None
 
-    @field_validator("blocked_keywords", "allowed_url_domains")
+    @field_validator("blocked_keywords", "allowed_url_domains", "allowed_topics", "compliance_keywords")
     @classmethod
     def _clean_free_text_list(cls, v):
         return None if v is None else _clean_list(v)

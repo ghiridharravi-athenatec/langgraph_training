@@ -1,4 +1,5 @@
-from tests.conftest import seed_document, signup
+from app.utils.mongo import add_message, create_conversation
+from tests.conftest import parse_sse_response, seed_document, signup
 
 
 def _grant_ragchatbot(client, admin_headers, user_id):
@@ -87,7 +88,7 @@ def test_chat_auto_creates_conversation_and_persists_history(client, admin_heade
     seed_document(admin_id)
     resp = client.post("/api/v1/chat", json={"question": "hello there"}, headers=admin_headers)
     assert resp.status_code == 200
-    returned_conversation_id = resp.json()["conversation_id"]
+    returned_conversation_id = parse_sse_response(resp)["conversation_id"]
     assert returned_conversation_id
 
     conversations = client.get("/api/v1/conversations", headers=admin_headers).json()
@@ -129,6 +130,44 @@ def test_chat_with_unknown_conversation_id_404s(client, admin_headers, monkeypat
         "/api/v1/chat", json={"question": "hi", "conversation_id": "no-such-id"}, headers=admin_headers
     )
     assert resp.status_code == 404
+
+
+def test_chat_response_turn_id_matches_persisted_message(client, admin_headers, admin_id, monkeypatch):
+    '''turn_id (the question message's own id) powers the chat screen's "View Trace"
+    link - GET /traces/turns/{turn_id} - and must match what the assistant message
+    is later persisted with.'''
+    monkeypatch.setattr(
+        "app.api.v1.api.IntentClassifier.classify_intent",
+        lambda self, question, model=None: {"intent": "greetings", "confidence": 0.99, "guardrail_events": []},
+    )
+    seed_document(admin_id)
+    resp = client.post("/api/v1/chat", json={"question": "hello there"}, headers=admin_headers)
+    chat_body = parse_sse_response(resp)
+    turn_id = chat_body["turn_id"]
+    assert turn_id
+
+    conversation_id = chat_body["conversation_id"]
+    messages = client.get(f"/api/v1/conversations/{conversation_id}/messages", headers=admin_headers).json()
+    assert messages[0]["id"] == turn_id  # the user message's own id...
+    assert messages[1]["turn_id"] == turn_id  # ...is what the assistant message points back to
+
+
+def test_historical_messages_without_stored_turn_id_get_it_backfilled(client, admin_headers, admin_id):
+    '''Messages persisted before turn_id existed never got that field written - "View
+    Trace" on old conversations still needs to work, so list_messages backfills it by
+    pairing with the preceding user message rather than requiring a data migration.'''
+    conversation = create_conversation(admin_id, "ragchatbot")
+    question = add_message(conversation["_id"], admin_id, "user", "an old question")
+    add_message(conversation["_id"], admin_id, "assistant", "an old answer")  # no turn_id, like pre-feature data
+
+    messages = client.get(f"/api/v1/conversations/{conversation['_id']}/messages", headers=admin_headers).json()
+    assert messages[0]["id"] == question["_id"]
+    assert messages[1]["turn_id"] == question["_id"]
+
+    # And the deep-link endpoint resolves it too, since it derives via the same pairing.
+    resp = client.get(f"/api/v1/traces/turns/{question['_id']}", headers=admin_headers)
+    assert resp.status_code == 200
+    assert resp.json()["answer"] == "an old answer"
 
 
 def test_blocked_turn_is_still_persisted(client, admin_headers):

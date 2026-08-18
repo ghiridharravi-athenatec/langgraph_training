@@ -1,4 +1,4 @@
-from tests.conftest import seed_document
+from tests.conftest import parse_sse_response, seed_document
 
 
 def _fail_if_classify_intent_is_called(self, question):
@@ -12,7 +12,7 @@ def test_chat_blocked_when_caller_has_no_documents(client, admin_headers, monkey
 
     resp = client.post("/api/v1/chat", json={"question": "what is the warranty period"}, headers=admin_headers)
     assert resp.status_code == 200  # a guardrail block is a normal chat response, not an HTTP error
-    body = resp.json()
+    body = parse_sse_response(resp)
     assert body["message"] == "Request blocked by knowledge base check"
     events = body["graph_response"]["guardrail_events"]
     documents_event = next(e for e in events if e["stage"] == "documents_check")
@@ -25,7 +25,7 @@ def test_chat_blocked_even_for_a_greeting_when_no_documents(client, admin_header
     monkeypatch.setattr("app.api.v1.api.IntentClassifier.classify_intent", _fail_if_classify_intent_is_called)
 
     resp = client.post("/api/v1/chat", json={"question": "hello there"}, headers=admin_headers)
-    assert resp.json()["message"] == "Request blocked by knowledge base check"
+    assert parse_sse_response(resp)["message"] == "Request blocked by knowledge base check"
 
 
 def test_admin_gets_no_exemption_from_the_documents_check(client, admin_headers, monkeypatch):
@@ -34,7 +34,7 @@ def test_admin_gets_no_exemption_from_the_documents_check(client, admin_headers,
     monkeypatch.setattr("app.api.v1.api.IntentClassifier.classify_intent", _fail_if_classify_intent_is_called)
 
     resp = client.post("/api/v1/chat", json={"question": "hello there"}, headers=admin_headers)
-    assert resp.json()["message"] == "Request blocked by knowledge base check"
+    assert parse_sse_response(resp)["message"] == "Request blocked by knowledge base check"
 
 
 def test_chat_proceeds_once_caller_has_ingested_a_document(client, admin_headers, admin_id, monkeypatch):
@@ -45,8 +45,9 @@ def test_chat_proceeds_once_caller_has_ingested_a_document(client, admin_headers
     seed_document(admin_id)
 
     resp = client.post("/api/v1/chat", json={"question": "hello there"}, headers=admin_headers)
-    assert resp.json()["message"] == "Chat completed successfully"
-    events = resp.json()["graph_response"]["guardrail_events"]
+    body = parse_sse_response(resp)
+    assert body["message"] == "Chat completed successfully"
+    events = body["graph_response"]["guardrail_events"]
     documents_event = next(e for e in events if e["stage"] == "documents_check")
     assert documents_event["passed"] is True
 
@@ -54,7 +55,7 @@ def test_chat_proceeds_once_caller_has_ingested_a_document(client, admin_headers
 def test_blocked_by_documents_check_turn_is_still_persisted(client, admin_headers):
     resp = client.post("/api/v1/chat", json={"question": "hello there"}, headers=admin_headers)
     assert resp.status_code == 200
-    conversation_id = resp.json()["conversation_id"]
+    conversation_id = parse_sse_response(resp)["conversation_id"]
 
     messages = client.get(f"/api/v1/conversations/{conversation_id}/messages", headers=admin_headers).json()
     assert len(messages) == 2

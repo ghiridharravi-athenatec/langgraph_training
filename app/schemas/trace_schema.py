@@ -33,6 +33,7 @@ class TraceMessageOut(BaseModel):
     blocked: Optional[bool] = None
     response_time_ms: Optional[float] = None
     created_at: datetime
+    turn_id: Optional[str] = None
 
 
 class TraceTurnOut(BaseModel):

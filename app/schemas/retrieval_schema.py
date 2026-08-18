@@ -9,6 +9,11 @@ class QAResponse(BaseModel):
     checklist) instead of a raw, differently-shaped 422 validation error.'''
     question: str
     conversation_id: Optional[str] = None
+    # Client-generated (crypto.randomUUID()) - lets the chat screen poll
+    # GET /progress/{request_id} for a live "what's happening right now" label
+    # while this request is in flight. Optional and purely cosmetic - omitting
+    # it just means no live progress, never an error (see app/core/progress.py).
+    request_id: Optional[str] = None
     # UI-facing Claude model choice ("haiku" | "sonnet" | "opus") - see the picker
     # next to the chat input. None/unrecognized falls back to CLAUDE_MODEL
     # (llm_provider.resolve_claude_model owns the mapping to a real model id).

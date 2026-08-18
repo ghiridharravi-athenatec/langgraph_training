@@ -17,7 +17,7 @@ _OLD_DEFAULT_PROJECT_NAME = "Conversational Assistant"
 logger = get_logger(__name__)
 
 DEFAULT_PROJECT_ID = "ragchatbot"
-DEFAULT_PROJECT_NAME = "Document Chatbot"
+DEFAULT_PROJECT_NAME = "Conversational Assistant"
 DEFAULT_PROJECT_DESCRIPTION = "Chat over whatever documents your team has uploaded."
 
 DATABASE_PROJECT_ID = "database-chatbot"

@@ -18,7 +18,7 @@ aggregate(), there is no delete_one/update_one/insert_one path to reach at all.
 import json
 import re
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote_plus
 
 import sqlalchemy
@@ -181,6 +181,15 @@ def _run_with_timeout(fn, timeout_seconds: int):
 
 # ---------------------------------------------------------------------------
 # SQL engines (Postgres / MySQL / SQL Server) via SQLAlchemy
+#
+# Schema-awareness (Postgres/SQL Server only): a schema there is a real
+# sub-division *within* the one database this connection is scoped to, so it's
+# safe to enumerate and expose. MySQL conflates "schema" with "database" -
+# get_schema_names() on MySQL would return the names of other databases
+# entirely outside this connection's own `database` field, which would leak
+# past the scoping every other engine respects here. MySQL tables are
+# therefore never schema-qualified; Postgres/SQL Server tables are, whenever
+# more than one user-facing schema actually exists.
 # ---------------------------------------------------------------------------
 
 def _sql_engine(details: Dict[str, Any]):
@@ -188,18 +197,64 @@ def _sql_engine(details: Dict[str, Any]):
     return sqlalchemy.create_engine(url, pool_pre_ping=True, pool_recycle=300)
 
 
+_SCHEMA_AWARE_ENGINES = {"postgresql", "mssql"}
+
+_SYSTEM_SCHEMAS = {
+    "postgresql": {"pg_catalog", "information_schema", "pg_toast"},
+    "mssql": {
+        "sys", "information_schema", "guest",
+        "db_accessadmin", "db_backupoperator", "db_datareader", "db_datawriter",
+        "db_ddladmin", "db_denydatareader", "db_denydatawriter", "db_owner", "db_securityadmin",
+    },
+}
+
+
+def _sql_user_schemas(engine_name: str, inspector: "sqlalchemy.engine.reflection.Inspector") -> List[str]:
+    system = _SYSTEM_SCHEMAS.get(engine_name, set())
+    return [s for s in inspector.get_schema_names() if s not in system]
+
+
+def _split_schema(engine_name: str, table_name: str) -> Tuple[Optional[str], str]:
+    '''Splits a "schema.table" name (as returned by _sql_list_tables) back into its
+    parts for describe_table/get_columns. MySQL table names are never
+    schema-qualified in the first place, so a dot there is just part of an
+    (unusual but legal) table name, not a schema separator.'''
+    if engine_name in _SCHEMA_AWARE_ENGINES and "." in table_name:
+        schema, _, name = table_name.partition(".")
+        return schema, name
+    return None, table_name
+
+
 def _sql_list_tables(details: Dict[str, Any]) -> List[str]:
     try:
         engine = _sql_engine(details)
-        return sqlalchemy.inspect(engine).get_table_names()
+        inspector = sqlalchemy.inspect(engine)
+        engine_name = details["engine"]
+
+        if engine_name not in _SCHEMA_AWARE_ENGINES:
+            return inspector.get_table_names()
+
+        schemas = _sql_user_schemas(engine_name, inspector)
+        if len(schemas) <= 1:
+            # Only one user-facing schema (the common case) - bare names, same
+            # output shape as before schema-awareness existed.
+            return inspector.get_table_names(schema=schemas[0] if schemas else None)
+
+        return [
+            f"{schema}.{table}"
+            for schema in schemas
+            for table in inspector.get_table_names(schema=schema)
+        ]
     except SQLAlchemyError as e:
         raise ConnectionError_(f"Could not list tables: {e}") from e
 
 
 def _sql_describe_table(details: Dict[str, Any], table_name: str) -> List[Dict[str, str]]:
     try:
+        engine_name = details["engine"]
+        schema, name = _split_schema(engine_name, table_name)
         engine = _sql_engine(details)
-        columns = sqlalchemy.inspect(engine).get_columns(table_name)
+        columns = sqlalchemy.inspect(engine).get_columns(name, schema=schema)
         return [{"name": c["name"], "type": str(c["type"])} for c in columns]
     except SQLAlchemyError as e:
         raise ConnectionError_(f"Could not describe table '{table_name}': {e}") from e

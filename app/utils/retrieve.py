@@ -11,7 +11,7 @@ from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
 from dotenv import load_dotenv
 
-from app.core import llm_provider
+from app.core import guardrail_config, llm_provider, progress
 from app.core.logger import get_logger
 from app.core.guardrails import (
     validate_input,
@@ -20,7 +20,10 @@ from app.core.guardrails import (
     validate_context_budget,
     validate_groundedness,
     validate_json_schema,
+    evaluate_bias_detection,
     timed_node,
+    BIAS_DETECTION_INSTRUCTIONS,
+    BIAS_DETECTION_SCHEMA_FIELDS,
 )
 from app.core.messages import msg
 
@@ -48,6 +51,9 @@ class RAGState(TypedDict):
     user_id: str
     question: str
     model: Optional[str]
+    # Client-generated - see api.py's /chat handler and app/core/progress.py.
+    # Set once before the graph runs, never modified by a node.
+    request_id: Optional[str]
     # Prior (question, answer) turns from this conversation, oldest first - see
     # mongo.get_conversation_history. Empty for a conversation's first turn.
     history: List[Dict[str, str]]
@@ -195,7 +201,11 @@ def llm_invoke(prompt: str, model: Optional[str] = None):
     # embedded in this dict's own guardrail_events, and mutating the same object schema_event
     # points to would make parsed.guardrail_events[i].parsed a circular self-reference.
     parsed = dict(schema_event["parsed"])
-    parsed["guardrail_events"] = [safety_event, schema_event]
+    events = [safety_event, schema_event]
+    if guardrail_config.get_config().get("bias_detection_enabled", True) and "bias_flag" in parsed:
+        events.append(evaluate_bias_detection(bool(parsed.get("bias_flag")), parsed.get("bias_reason")))
+
+    parsed["guardrail_events"] = events
     parsed["token_count"] = result.token_count
     parsed["logs"] = [result.log]
     return parsed
@@ -224,6 +234,7 @@ def validate_input_node(state: RAGState):
 
 @timed_node("retrieve")
 def retrieve_node(state: RAGState):
+    progress.update(state.get("request_id"), "Searching your documents…")
 
     query = state["question"]
     user_id = state["user_id"]
@@ -284,6 +295,7 @@ def retrieve_node(state: RAGState):
 
 @timed_node("validate_retrieval")
 def validate_retrieval_node(state: RAGState):
+    progress.update(state.get("request_id"), "Reviewing relevant passages…")
     result = validate_retrieval(state["retrieved_chunks"])
 
     if not result["passed"]:
@@ -380,7 +392,11 @@ def _format_history(history: List[Dict[str, str]]) -> str:
 
 @timed_node("answer")
 def answer_node(state: RAGState):
+    progress.update(state.get("request_id"), "Drafting an answer…")
     history_block = _format_history(state.get("history") or [])
+    bias_enabled = guardrail_config.get_config().get("bias_detection_enabled", True)
+    bias_instructions = BIAS_DETECTION_INSTRUCTIONS if bias_enabled else ""
+    bias_schema_fields = f",\n                    {BIAS_DETECTION_SCHEMA_FIELDS}" if bias_enabled else ""
     prompt = f"""
                 You are an AI assistant for question answering over technical documents.
 
@@ -402,6 +418,7 @@ def answer_node(state: RAGState):
                 4. Preserve the wording and meaning from the source whenever possible.
                 5. If information exists across multiple chunks, merge them into one complete answer.
                 6. Do not omit any relevant information found in the context.
+                {bias_instructions}
 
                 Formatting Rules:
                 - Format the answer to maximize readability.
@@ -425,7 +442,7 @@ def answer_node(state: RAGState):
 
                 Schema:
                 {{
-                    "answer": "<formatted markdown answer>"
+                    "answer": "<formatted markdown answer>"{bias_schema_fields}
                 }}
                 """
 
@@ -455,6 +472,7 @@ def answer_node(state: RAGState):
 
 @timed_node("validate_output")
 def validate_output_node(state: RAGState):
+    progress.update(state.get("request_id"), "Double-checking the response…")
     groundedness_event = validate_groundedness(state["answer"], state["context"], embedding_model)
     if not groundedness_event["passed"]:
         return {

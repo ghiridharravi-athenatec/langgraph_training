@@ -18,6 +18,9 @@ def test_default_config_matches_documented_defaults(client, admin_headers):
     assert body["daily_token_quota"] == config.DAILY_TOKEN_QUOTA
     assert body["intent_confidence_threshold"] == 0.8
     assert body["max_answer_length"] == 6000
+    assert body["allowed_topics"] == []
+    assert body["bias_detection_enabled"] is True
+    assert body["tone_calibration_enabled"] is True
 
 
 def test_user_without_traces_access_is_forbidden(client, user_headers):
@@ -91,6 +94,25 @@ def test_update_rejects_min_greater_than_max_question_length(client, admin_heade
         headers=admin_headers,
     )
     assert resp.status_code == 422
+
+
+def test_new_guardrail_fields_round_trip(client, admin_headers):
+    resp = client.put(
+        "/api/v1/traces/guardrail-config",
+        json={
+            "allowed_topics": ["billing", "product usage"],
+            "compliance_keywords": ["guaranteed returns"],
+            "bias_detection_enabled": False,
+            "tone_calibration_enabled": False,
+        },
+        headers=admin_headers,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["allowed_topics"] == ["billing", "product usage"]
+    assert body["compliance_keywords"] == ["guaranteed returns"]
+    assert body["bias_detection_enabled"] is False
+    assert body["tone_calibration_enabled"] is False
 
 
 def test_partial_update_leaves_other_fields_untouched(client, admin_headers):
