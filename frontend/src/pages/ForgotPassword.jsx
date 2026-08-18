@@ -32,7 +32,7 @@ export default function ForgotPassword() {
         <div className="auth-form-inner">
           <div className="auth-form-brand">
             <span className="auth-form-mark">✦</span>
-            <span className="auth-form-wordmark">AI Assistance</span>
+            <span className="auth-form-wordmark">AI Guardrails</span>
           </div>
 
           <h1 className="auth-title">Reset your password</h1>

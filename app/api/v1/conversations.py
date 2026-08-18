@@ -26,7 +26,7 @@ def build_conversations_router(project_id: str, prefix: str) -> APIRouter:
     '''Chat history is per-project - each project's chatbot gets its own
     conversation list/endpoints, built from this same factory rather than one
     shared router, so a document conversation can never be read/continued
-    through the database chatbot's endpoints or vice versa. Same behind-the-
+    through the database agent's endpoints or vice versa. Same behind-the-
     scenes gate every project endpoint uses (require_project_access).'''
     require_access = require_project_access(project_id)
     router = APIRouter(prefix=prefix, tags=["conversations"])

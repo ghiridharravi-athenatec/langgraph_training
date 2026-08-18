@@ -30,7 +30,7 @@ from app.utils.mongo import (
 
 logger = get_logger(__name__)
 
-# The database chatbot's own project - separate from ragchatbot (the document
+# The database agent's own project - separate from ragchatbot (the document
 # chatbot). Connections, chat, and conversation history all live behind this
 # one grant.
 _require_database_chatbot_access = require_project_access("database-chatbot")

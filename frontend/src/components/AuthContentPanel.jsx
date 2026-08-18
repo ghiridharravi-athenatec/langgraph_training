@@ -9,8 +9,8 @@ const DEFAULT_FEATURES = [
 ];
 
 export default function AuthContentPanel({
-  eyebrow = "Why AI Assistance",
-  heading = "Nothing reaches the model unchecked.",
+  eyebrow = "Guardrails Implementation",
+  heading = "How to implement guardrails for LLM applications",
   body = "Every question runs through automated guardrails before and after the model ever sees it - PII masking, quota limits, safety and groundedness checks. Chat with your documents or a live database, and trace exactly what happened, turn by turn.",
   features = DEFAULT_FEATURES,
   stat = "20+ automated guardrail checks, running live",

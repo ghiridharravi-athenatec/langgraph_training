@@ -2115,7 +2115,7 @@ button:disabled {
 }
 
 /* ---------------------------------------------------------------------- */
-/* Conversational Assistant - Claude-style chat interface */
+/* Conversational Intelligence - Claude-style chat interface */
 /* ---------------------------------------------------------------------- */
 
 .chat-shell {
@@ -2546,6 +2546,100 @@ button:disabled {
 /* ---------------------------------------------------------------------- */
 /* Instructions: architecture pipeline diagram + scenario cards */
 /* ---------------------------------------------------------------------- */
+
+/* Simple agentic overview - the default Architecture view. Reuses the
+   pipeline-node-owner badge colors so it stays visually tied to the detailed
+   diagram underneath rather than reading as a separate design. */
+.agentic-diagram {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  margin-top: 18px;
+}
+
+.agentic-actor {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 22px;
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+}
+
+.agentic-actor-label {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.agentic-actor-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.agentic-card {
+  width: 100%;
+  max-width: 300px;
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  text-align: center;
+  box-shadow: var(--shadow-sm);
+}
+
+.agentic-card-role {
+  font-size: 10.5px;
+  font-style: italic;
+  color: var(--text-muted);
+  margin-top: 1px;
+}
+
+.agentic-card-desc {
+  font-size: 12px;
+  color: var(--text);
+  line-height: 1.45;
+  margin-top: 7px;
+}
+
+/* Small context label above a card that appears more than once in the chain
+   (the Guardrails Agent, before and after the Document Agent) - says which
+   pass this instance is, without a second, separately-worded card. */
+.agentic-pill {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+  background: var(--bg-alt);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  padding: 1px 9px;
+  margin-bottom: 8px;
+}
+
+.pipeline-detail-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 20px 0 4px;
+  padding: 7px 14px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.pipeline-detail-toggle:hover {
+  color: var(--text);
+  border-color: var(--border);
+}
 
 .pipeline-subheading {
   font-family: var(--font-serif);

@@ -1,4 +1,4 @@
-'''The document chatbot (ragchatbot) and database chatbot (database-chatbot) are
+'''The document chatbot (ragchatbot) and database agent (database-chatbot) are
 two separate projects now - no auto-routing between them. These tests confirm
 POST /chat never touches database connections at all (so a user with only a
 database connected and no documents still hits the "no documents" guardrail
@@ -23,7 +23,7 @@ def _grant(client, admin_headers, user_id, *projects):
 
 def test_chat_ignores_database_connections_entirely(client, admin_headers, monkeypatch):
     '''A user with a database connected but no documents still gets blocked by the
-    document-only "no documents" guardrail on /chat - the database chatbot is a
+    document-only "no documents" guardrail on /chat - the database agent is a
     fully separate project now, not a fallback source for this endpoint.'''
     monkeypatch.setattr("app.api.v1.api.IntentClassifier.classify_intent", _classify_question)
     monkeypatch.setattr("app.core.db_connections.test_connection", lambda details: ["work_orders"])

@@ -405,7 +405,7 @@ MAX_CONVERSATION_TITLE_LENGTH = 50
 
 
 def create_conversation(user_id: str, project_id: str, db_name: str = DB_NAME, **extra) -> Dict[str, Any]:
-    '''extra is stashed onto the conversation as-is - e.g. the database chatbot
+    '''extra is stashed onto the conversation as-is - e.g. the database agent
     pins a connection_id here so later turns in the same conversation always
     query the same connection, the same way user_id is never re-trusted from
     the client on later requests.'''

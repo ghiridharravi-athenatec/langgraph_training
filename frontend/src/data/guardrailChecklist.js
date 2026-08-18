@@ -297,7 +297,7 @@ export const GUARDRAIL_CHECKLIST = [
   },
 ];
 
-// The database chatbot reuses validate_input/validate_quota/validate_output
+// The database agent reuses validate_input/validate_quota/validate_output
 // verbatim (see app/api/v1/database.py's POST /chat), so their events are the
 // exact same shape as the document pipeline's - only the retrieval-specific and
 // document-only checks (knowledge base, model safety, intent, cache, retrieval,

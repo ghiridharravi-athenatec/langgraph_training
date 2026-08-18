@@ -1,5 +1,5 @@
 ---
-title: Conversational Assistant API
+title: Conversational Intelligence API
 emoji: 📄
 colorFrom: blue
 colorTo: indigo
@@ -8,7 +8,7 @@ app_port: 7860
 pinned: false
 ---
 
-# Conversational Assistant — backend
+# Conversational Intelligence — backend
 
 FastAPI + LangGraph RAG pipeline (MongoDB Atlas Vector Search, Gemini, local
 Presidio/spaCy PII detection) deployed here as a Hugging Face Space. The React

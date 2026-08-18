@@ -295,7 +295,7 @@ export default function RagChatbot() {
         <div className="chat-nav-top">
           <Link to="/" className="chat-nav-brand" title="Back to Projects">
             <span className="brand-mark">✦</span>
-            <span className="chat-nav-label">AI Assistance</span>
+            <span className="chat-nav-label">AI Guardrails</span>
           </Link>
           <div className="chat-nav-top-actions">
             <ThemeToggle />

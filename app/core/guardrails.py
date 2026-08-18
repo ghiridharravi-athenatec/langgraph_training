@@ -751,7 +751,7 @@ def validate_has_documents(has_documents: bool, stage: str = "documents_check") 
 # Optional and off by default (guardrail_config's allowed_topics is empty) -
 # only the document pipeline uses this, riding on the same classify_intent
 # call as the prompt-injection/intent-detection judgments (one more field on
-# the same JSON response, no extra round-trip). The database chatbot doesn't
+# the same JSON response, no extra round-trip). The database agent doesn't
 # use classify_intent at all (it's an agentic tool-calling loop - see
 # db_agent.py), so this guardrail doesn't apply there.
 # ---------------------------------------------------------------------------

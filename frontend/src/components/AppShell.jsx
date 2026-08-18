@@ -27,7 +27,7 @@ export default function AppShell({ children, wide = false }) {
       <header className="shell-header">
         <Link to="/" className="brand">
           <span className="brand-mark">✦</span>
-          <span>AI Assistance</span>
+          <span>AI Guardrails</span>
         </Link>
         <nav className="shell-nav">
           {NAV_LINKS.map((link) => (

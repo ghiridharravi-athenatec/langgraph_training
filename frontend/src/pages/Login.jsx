@@ -51,8 +51,8 @@ export default function Login() {
       <div className="auth-form-panel">
         <div className="auth-form-inner">
           <div className="auth-form-brand">
-            <span className="auth-form-mark">✦</span>
-            <span className="auth-form-wordmark">AI Assistance</span>
+            {/* <span className="auth-form-mark">✦</span>
+            <span className="auth-form-wordmark">AI Guardrails</span> */}
           </div>
           <span className="auth-eyebrow">Guardrails Demonstration</span>
 

@@ -69,14 +69,14 @@ const SETUP_DB_CONNECTION_FLOW = [
   },
   {
     title: "Saved",
-    desc: "Available to the Database Chatbot from then on - every query still runs through the same read-only enforcement shown below",
+    desc: "Available to the Database Agent from then on - every query still runs through the same read-only enforcement shown below",
   },
 ];
 
 const PIPELINE_SHARED_TOP = [
   {
     title: "User",
-    desc: "Conversational Assistant or Database Chatbot - same chat UI pattern either way",
+    desc: "Conversational Intelligence or Database Agent - same chat UI pattern either way",
   },
   {
     title: "POST /chat or /database/chat",
@@ -184,6 +184,92 @@ const PIPELINE_SHARED_BOTTOM = [
 ];
 
 // ---------------------------------------------------------------------------
+// Simple agentic overview - the default view for the Architecture tab. Same
+// four actors as the technical pipeline below (owner keys match OWNER_LABELS
+// exactly, so the two diagrams never drift out of sync), but told as "who does
+// what" in one sentence each instead of the full step-by-step pipeline. The
+// granular version stays available underneath for anyone who wants the detail.
+// ---------------------------------------------------------------------------
+
+const AGENT_OVERVIEW = {
+  orchestrator: {
+    title: "Supervisor Agent",
+    role: "Coordinates every agent below",
+    desc: "Calls the Guardrails Agent, then the right task agent, then the Guardrails Agent again - same fixed order, every turn.",
+  },
+  guardrails: {
+    title: "Guardrails Agent",
+    role: "Deterministic reviewer",
+    desc: "Reviews every question before a task agent sees it, and reviews every answer before you do. Same checks, every turn, both chatbots.",
+  },
+  document: {
+    title: "Document Agent",
+    role: "Task-performing, fixed steps",
+    desc: "Answers strictly from documents you've uploaded - retrieves relevant passages, then writes an answer grounded in them.",
+  },
+  database: {
+    title: "Database Agent",
+    role: "Genuinely agentic",
+    desc: "The one autonomous piece here - decides its own next step against your connected database, read-only.",
+  },
+};
+
+function AgenticActor({ label, desc }) {
+  return (
+    <div className="agentic-actor">
+      <span className="agentic-actor-label">{label}</span>
+      {desc && <span className="agentic-actor-desc">{desc}</span>}
+    </div>
+  );
+}
+
+function AgenticCard({ owner, pill, desc }) {
+  const info = AGENT_OVERVIEW[owner];
+  return (
+    <div className={`agentic-card agentic-card-${owner}`}>
+      {pill && <span className="agentic-pill">{pill}</span>}
+      <span className={`pipeline-node-owner pipeline-node-owner-${owner}`}>{info.title}</span>
+      <div className="agentic-card-role">{info.role}</div>
+      <div className="agentic-card-desc">{desc || info.desc}</div>
+    </div>
+  );
+}
+
+function AgenticArrow() {
+  return (
+    <div className="pipeline-arrow" aria-hidden="true">
+      <span className="pipeline-arrow-line" />
+    </div>
+  );
+}
+
+function AgenticOverviewDiagram() {
+  return (
+    <div className="agentic-diagram">
+      <AgenticActor label="You" desc="Ask a question" />
+      <AgenticArrow />
+      <AgenticCard owner="orchestrator" />
+      <AgenticArrow />
+      <AgenticCard
+        owner="guardrails"
+        pill="Checks your question"
+        desc="Reviews your question before the Document Agent ever sees it - length, injection attempts, blocked keywords, PII."
+      />
+      <AgenticArrow />
+      <AgenticCard owner="document" />
+      <AgenticArrow />
+      <AgenticCard
+        owner="guardrails"
+        pill="Checks the answer"
+        desc="Reviews the answer before you see it - not empty, blocked/compliance keywords, PII masking, groundedness."
+      />
+      <AgenticArrow />
+      <AgenticActor label="You" desc="See the reviewed answer" />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Agent ownership - which of the three actors (see the "Is agentic AI applied
 // here?" discussion this page is meant to answer) is responsible for a given
 // pipeline box. Nodes with no owner (the human "User" boxes) render no badge.
@@ -193,14 +279,14 @@ const OWNER_LABELS = {
   guardrails: "Guardrails Agent",
   document: "Document Agent",
   database: "Database Agent",
-  orchestrator: "Orchestrator",
+  orchestrator: "Supervisor Agent",
 };
 
 const OWNER_LEGEND = [
   { key: "guardrails", desc: "Deterministic reviewer - runs every guardrail check, on every turn, for both chatbots" },
   { key: "document", desc: "Task-performing - fixed retrieve-then-generate pipeline, not autonomous" },
   { key: "database", desc: "Genuinely agentic - decides its own next tool call, the only autonomous piece here" },
-  { key: "orchestrator", desc: "The route handler - owns the request lifecycle, delegates every decision to an agent" },
+  { key: "orchestrator", desc: "Coordinates the request - calls the Guardrails Agent, then the right task agent, then the Guardrails Agent again" },
 ];
 
 function PipelineNode({ node }) {
@@ -308,11 +394,11 @@ function PipelineDiagram() {
 
       <div className="pipeline-branch-row">
         <div className="pipeline-branch">
-          <span className="pipeline-branch-header">Conversational Assistant</span>
+          <span className="pipeline-branch-header">Conversational Intelligence</span>
           <PipelineColumn nodes={PIPELINE_DOC_BRANCH} />
         </div>
         <div className="pipeline-branch">
-          <span className="pipeline-branch-header">Database Chatbot</span>
+          <span className="pipeline-branch-header">Database Agent</span>
           <PipelineColumn nodes={PIPELINE_DB_BRANCH} />
           <p className="pipeline-branch-note">
             Deliberately thinner than the document path - there's no retrieval, cache, or groundedness
@@ -356,7 +442,7 @@ const SCENARIOS = [
     n: "02",
     tag: "Output · Model-based",
     title: "PII is masked automatically, on every answer",
-    question: "Give me the email address of Ghiridhar?",
+    question: "Give me the email address of John Smith?",
     trace: [
       "input validation → passed",
       "retrieval → 3 chunks from your own documents",
@@ -438,6 +524,7 @@ function ScenarioCard({ scenario }) {
 
 export default function Instructions() {
   const [activeTab, setActiveTab] = useState("pipeline");
+  const [showTechnicalDetail, setShowTechnicalDetail] = useState(false);
 
   return (
     <AppShell wide>
@@ -477,28 +564,49 @@ export default function Instructions() {
 
         {activeTab === "pipeline" && (
           <div className="ingest-card">
-            <h3>Architecture: how a request flows through the system</h3>
+            <h3>Architecture: three agents, working together</h3>
             <p className="gr-field-hint">
-              Every box below is a real stage in the actual pipeline - a marked box (▣) is a guardrail
-              check that can block a turn; a plain box is an ordinary processing step.
+              A Supervisor Agent routes your question. A Guardrails Agent reviews it going in and the
+              answer coming back out, every time. In between, the Document Agent does the actual work.
             </p>
+            <AgenticOverviewDiagram />
 
-            <h4 className="pipeline-subheading">Getting data in</h4>
-            <p className="gr-field-hint">
-              Two independent, one-time setup flows - a document only needs to go through Document Ingestion
-              once; a database connection only needs to be added once. These are deterministic utility
-              pipelines, not per-turn agent work, so the boxes below aren't labeled with an owning agent.
-            </p>
-            <SetupDiagram />
+            <button
+              type="button"
+              className="pipeline-detail-toggle"
+              onClick={() => setShowTechnicalDetail((v) => !v)}
+              aria-expanded={showTechnicalDetail}
+            >
+              {showTechnicalDetail ? "Hide" : "Show"} the full technical pipeline
+              <span aria-hidden="true">{showTechnicalDetail ? " ▴" : " ▾"}</span>
+            </button>
 
-            <h4 className="pipeline-subheading">Then, every chat turn</h4>
-            <p className="gr-field-hint">
-              Every box below is also labeled with the actor that owns it. A single Guardrails Agent runs
-              every check, on both chatbots; the document and database flows are task-performing agents that
-              call into it and never decide a guardrail outcome themselves.
-            </p>
-            <PipelineLegend />
-            <PipelineDiagram />
+            {showTechnicalDetail && (
+              <>
+                <p className="gr-field-hint">
+                  Every box below is a real stage in the actual pipeline - a marked box (▣) is a guardrail
+                  check that can block a turn; a plain box is an ordinary processing step.
+                </p>
+
+                <h4 className="pipeline-subheading">Getting data in</h4>
+                <p className="gr-field-hint">
+                  Two independent, one-time setup flows - a document only needs to go through Document
+                  Ingestion once; a database connection only needs to be added once. These are deterministic
+                  utility pipelines, not per-turn agent work, so the boxes below aren't labeled with an
+                  owning agent.
+                </p>
+                <SetupDiagram />
+
+                <h4 className="pipeline-subheading">Then, every chat turn</h4>
+                <p className="gr-field-hint">
+                  Every box below is also labeled with the actor that owns it. A single Guardrails Agent
+                  runs every check, on both chatbots; the document and database flows are task-performing
+                  agents that call into it and never decide a guardrail outcome themselves.
+                </p>
+                <PipelineLegend />
+                <PipelineDiagram />
+              </>
+            )}
           </div>
         )}
       </div>

@@ -12,16 +12,16 @@ from app.utils.mongo import (
     upsert_default_project,
 )
 
-_OLD_DEFAULT_PROJECT_NAME = "Conversational Assistant"
+_OLD_DEFAULT_PROJECT_NAME = "Conversational Intelligence"
 
 logger = get_logger(__name__)
 
 DEFAULT_PROJECT_ID = "ragchatbot"
-DEFAULT_PROJECT_NAME = "Conversational Assistant"
+DEFAULT_PROJECT_NAME = "Conversational Intelligence"
 DEFAULT_PROJECT_DESCRIPTION = "Chat over whatever documents your team has uploaded."
 
 DATABASE_PROJECT_ID = "database-chatbot"
-DATABASE_PROJECT_NAME = "Database Chatbot"
+DATABASE_PROJECT_NAME = "Database Agent"
 DATABASE_PROJECT_DESCRIPTION = "Chat with a connected external database - read-only, powered by an agentic tool-calling loop."
 
 TRACES_PROJECT_ID = "guardrail-traces"
