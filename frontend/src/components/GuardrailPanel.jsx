@@ -1,4 +1,4 @@
-import { GUARDRAIL_CHECKLIST, groupChecklist } from "../data/guardrailChecklist";
+import { GUARDRAIL_CHECKLIST } from "../data/guardrailChecklist";
 
 const PII_LABELS = {
   EMAIL_ADDRESS: "Email address",
@@ -21,11 +21,26 @@ function piiLabel(entityType) {
   return PII_LABELS[entityType] || entityType;
 }
 
+// Same Input -> Retrieval -> Output staging as the Guardrails tab's config
+// view, relabeled to match the pipeline's actual request -> retrieval ->
+// response framing.
+const CATEGORY_LABELS = {
+  Input: "Request",
+  Retrieval: "Retrieval",
+  Output: "Response",
+};
+
+function groupByCategory(checklist) {
+  return ["Input", "Retrieval", "Output"]
+    .map((category) => ({ name: category, items: checklist.filter((item) => item.category === category) }))
+    .filter((group) => group.items.length > 0);
+}
+
 const STATUS_META = {
-  pass: { icon: "✅", label: "Passed" },
-  fail: { icon: "🚫", label: "Blocked" },
-  skipped: { icon: "⏭️", label: "Skipped" },
-  not_run: { icon: "—", label: "Not run" },
+  pass: { icon: "✓", label: "Passed" },
+  fail: { icon: "✗", label: "Blocked" },
+  skipped: { icon: "⏭", label: "Skipped" },
+  not_run: { icon: "–", label: "Not run" },
 };
 
 function GuardrailRow({ item, events }) {
@@ -34,75 +49,93 @@ function GuardrailRow({ item, events }) {
   const piiDetected = result.piiDetected || [];
   const flaggedCategories = result.flaggedCategories || [];
 
+  const extraFields = [];
+  if (result.reason) {
+    extraFields.push({ label: "Reason", node: result.reason });
+  }
+  if (piiDetected.length > 0) {
+    extraFields.push({
+      label: "Masked",
+      node: piiDetected.map((p) => (
+        <span key={p.entity_type} className="guardrail-badge guardrail-badge-pii">
+          {piiLabel(p.entity_type)}
+          {p.count > 1 ? ` ×${p.count}` : ""}
+        </span>
+      )),
+    });
+  }
+  if (flaggedCategories.length > 0) {
+    extraFields.push({
+      label: "Flagged",
+      node: flaggedCategories.map((c) => (
+        <span key={c} className="guardrail-badge guardrail-badge-warn">
+          {c.replace("HARM_CATEGORY_", "").replaceAll("_", " ").toLowerCase()}
+        </span>
+      )),
+    });
+  }
+  if (result.intent !== undefined) {
+    extraFields.push({
+      label: result.status === "pass" ? "Detected" : "Best guess",
+      node: (
+        <span className={`guardrail-badge ${result.status === "pass" ? "guardrail-badge-pii" : "guardrail-badge-warn"}`}>
+          {result.intent}
+          {typeof result.confidence === "number" ? ` (${Math.round(result.confidence * 100)}%)` : ""}
+        </span>
+      ),
+    });
+  }
+  if (typeof result.tokensUsedToday === "number") {
+    extraFields.push({
+      label: "Usage",
+      node: (
+        <span className="guardrail-badge">
+          {result.tokensUsedToday.toLocaleString()} / {result.dailyQuota?.toLocaleString()} tokens today
+        </span>
+      ),
+    });
+  }
+  if (typeof result.groundednessScore === "number") {
+    extraFields.push({
+      label: "Similarity",
+      node: (
+        <span className={`guardrail-badge ${result.status === "pass" ? "guardrail-badge-pii" : "guardrail-badge-warn"}`}>
+          {result.groundednessScore.toFixed(2)}
+        </span>
+      ),
+    });
+  }
+  if (typeof result.cacheHit === "boolean") {
+    extraFields.push({
+      label: result.cacheHit ? "Reused" : "Cache",
+      node: (
+        <span className={`guardrail-badge ${result.cacheHit ? "guardrail-badge-pii" : ""}`}>
+          {result.cacheHit
+            ? `"${result.matchedQuestion}" (similarity ${result.cacheSimilarity?.toFixed(2)})`
+            : "No similar past question found"}
+        </span>
+      ),
+    });
+  }
+
   return (
-    <div className={`guardrail-row guardrail-row-${result.status}`}>
-      <div className="guardrail-row-head">
-        <span className="guardrail-event-icon">{meta.icon}</span>
-        <span className="guardrail-event-stage">{item.label}</span>
-        <span className={`guardrail-status-tag guardrail-status-${result.status}`}>{meta.label}</span>
+    <div className={`gr-row gr-row-status-${result.status}`}>
+      <div className="gr-row-header">
+        <span className="gr-row-name">{item.label}</span>
+        <span className={`gr-row-badge gr-row-badge-${result.status}`}>
+          {meta.icon} {meta.label}
+        </span>
       </div>
+      <p className="gr-row-desc">{item.description}</p>
 
-      {result.reason && <p className="guardrail-event-reason">{result.reason}</p>}
-
-      {piiDetected.length > 0 && (
-        <div className="guardrail-pii">
-          <span className="guardrail-pii-label">Masked:</span>
-          {piiDetected.map((p) => (
-            <span key={p.entity_type} className="guardrail-badge guardrail-badge-pii">
-              {piiLabel(p.entity_type)}
-              {p.count > 1 ? ` ×${p.count}` : ""}
-            </span>
+      {extraFields.length > 0 && (
+        <div className="gr-row-fields">
+          {extraFields.map((field, i) => (
+            <div key={i} className="gr-field-row">
+              <span className="gr-field-row-label">{field.label}</span>
+              <div className="gr-field-row-control gr-field-row-control-inline">{field.node}</div>
+            </div>
           ))}
-        </div>
-      )}
-
-      {flaggedCategories.length > 0 && (
-        <div className="guardrail-pii">
-          <span className="guardrail-pii-label">Flagged:</span>
-          {flaggedCategories.map((c) => (
-            <span key={c} className="guardrail-badge guardrail-badge-warn">
-              {c.replace("HARM_CATEGORY_", "").replaceAll("_", " ").toLowerCase()}
-            </span>
-          ))}
-        </div>
-      )}
-
-      {result.intent !== undefined && (
-        <div className="guardrail-pii">
-          <span className="guardrail-pii-label">{result.status === "pass" ? "Detected:" : "Best guess:"}</span>
-          <span className={`guardrail-badge ${result.status === "pass" ? "guardrail-badge-pii" : "guardrail-badge-warn"}`}>
-            {result.intent}
-            {typeof result.confidence === "number" ? ` (${Math.round(result.confidence * 100)}%)` : ""}
-          </span>
-        </div>
-      )}
-
-      {typeof result.tokensUsedToday === "number" && (
-        <div className="guardrail-pii">
-          <span className="guardrail-pii-label">Usage:</span>
-          <span className="guardrail-badge">
-            {result.tokensUsedToday.toLocaleString()} / {result.dailyQuota?.toLocaleString()} tokens today
-          </span>
-        </div>
-      )}
-
-      {typeof result.groundednessScore === "number" && (
-        <div className="guardrail-pii">
-          <span className="guardrail-pii-label">Similarity:</span>
-          <span className={`guardrail-badge ${result.status === "pass" ? "guardrail-badge-pii" : "guardrail-badge-warn"}`}>
-            {result.groundednessScore.toFixed(2)}
-          </span>
-        </div>
-      )}
-
-      {typeof result.cacheHit === "boolean" && (
-        <div className="guardrail-pii">
-          <span className="guardrail-pii-label">{result.cacheHit ? "Reused:" : "Cache:"}</span>
-          <span className={`guardrail-badge ${result.cacheHit ? "guardrail-badge-pii" : ""}`}>
-            {result.cacheHit
-              ? `"${result.matchedQuestion}" (similarity ${result.cacheSimilarity?.toFixed(2)})`
-              : "No similar past question found"}
-          </span>
         </div>
       )}
     </div>
@@ -114,17 +147,23 @@ export default function GuardrailPanel({ logs, graphResponse, events: eventsProp
   // pass events directly instead (see app/api/v1/database.py - there's no
   // graph_response for them, just a flat guardrail_events list on the message).
   const events = eventsProp || graphResponse?.guardrail_events || [];
-  const groups = groupChecklist(checklist || GUARDRAIL_CHECKLIST);
+  const categories = groupByCategory(checklist || GUARDRAIL_CHECKLIST);
 
   return (
-    <div className="chat-logs">
-      <div className="guardrail-list">
-        {groups.map((group) => (
-          <div key={group.name} className="guardrail-group">
-            <h4 className="guardrail-group-title">{group.name}</h4>
-            {group.items.map((item) => (
-              <GuardrailRow key={item.id} item={item} events={events} />
-            ))}
+    <div className="trace-field">
+      <div className="trace-field-head">
+        <span className="field-label">Guardrail checks</span>
+      </div>
+
+      <div className="traces-guardrail-catalog">
+        {categories.map((category) => (
+          <div key={category.name} className="gr-category-section">
+            <h4 className="gr-category-heading">{CATEGORY_LABELS[category.name] || category.name}</h4>
+            <div className="gr-row-list">
+              {category.items.map((item) => (
+                <GuardrailRow key={item.id} item={item} events={events} />
+              ))}
+            </div>
           </div>
         ))}
       </div>

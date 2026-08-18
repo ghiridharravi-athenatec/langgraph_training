@@ -24,7 +24,8 @@ from google import genai
 from google.genai import types as genai_types
 
 from app.core import config
-from app.core.guardrails import build_safety_settings, evaluate_model_safety, extract_token_count
+from app.core.guardrails import extract_token_count
+from app.core.guardrails_agent import guardrails_agent
 from app.core.logger import get_logger
 
 logger = get_logger(__name__)
@@ -88,11 +89,11 @@ def _generate_with_gemini(prompt: str, max_tokens: int, stage: str) -> LLMResult
             temperature=0,
             max_output_tokens=max_tokens,
             response_mime_type="application/json",
-            safety_settings=build_safety_settings(),
+            safety_settings=guardrails_agent.build_safety_settings(),
         ),
     )
     token_count = extract_token_count(response)
-    safety_event = evaluate_model_safety(response, stage=stage)
+    safety_event = guardrails_agent.check_model_safety(response, stage=stage)
     safety_event["provider"] = "gemini"
     text = response.text if safety_event["passed"] else ""
     return LLMResult(

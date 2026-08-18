@@ -41,6 +41,9 @@ model_safety:
 model_prompt_injection_check:
   default_reason: "Model classified this prompt as a jailbreak/prompt-injection attempt."
 
+self_harm_check:
+  default_reason: "Model classified this prompt as requesting self-harm or suicide-related content."
+
 retrieval_validation:
   no_chunks_at_all: "No relevant documents found for this question."
   no_chunks_above_threshold: "No chunks met the minimum relevance score ({min_score})."

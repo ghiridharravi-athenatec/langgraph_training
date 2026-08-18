@@ -26,7 +26,7 @@ from dotenv import load_dotenv
 from app.utils.retrieve import compiled_graph, embedding_model, invalidate_bm25_cache
 from app.core import config, guardrail_config, progress
 from app.core.logger import get_logger
-from app.core.guardrails import validate_input, validate_has_documents, evaluate_intent_detection, validate_quota
+from app.core.guardrails_agent import guardrails_agent
 from app.core.ingest_guardrails import validate_file_size, validate_file_type
 from app.core.messages import msg
 from app.schemas.guardrail_config_schema import KNOWN_PII_ENTITIES
@@ -286,7 +286,8 @@ async def _generate_chat_response(state: QAResponse, current_user: dict) -> dict
         else:
             conversation_id = create_conversation(current_user["_id"], "ragchatbot")["_id"]
 
-        input_check = validate_input(state.question)
+        progress.update(state.request_id, "Guardrails Agent: validating your question…")
+        input_check = guardrails_agent.check_input(state.question)
         if not input_check["passed"]:
             logger.warning("Chat request blocked by input guardrail: %s", input_check["reason"])
             response = {
@@ -311,7 +312,8 @@ async def _generate_chat_response(state: QAResponse, current_user: dict) -> dict
         )
         state.history = history
 
-        documents_event = validate_has_documents(has_documents)
+        progress.update(state.request_id, "Guardrails Agent: checking access & quota…")
+        documents_event = guardrails_agent.check_has_documents(has_documents)
         if not documents_event["passed"]:
             logger.warning("Chat request blocked by knowledge base guardrail: %s", documents_event["reason"])
             response = {
@@ -326,7 +328,7 @@ async def _generate_chat_response(state: QAResponse, current_user: dict) -> dict
         daily_quota = current_user.get("daily_token_quota")
         if daily_quota is None:
             daily_quota = guardrail_config.get_config()["daily_token_quota"]
-        quota_event = validate_quota(daily_usage, daily_quota)
+        quota_event = guardrails_agent.check_quota(daily_usage, daily_quota)
         if not quota_event["passed"]:
             logger.warning("Chat request blocked by quota guardrail: %s", quota_event["reason"])
             response = {
@@ -338,7 +340,7 @@ async def _generate_chat_response(state: QAResponse, current_user: dict) -> dict
             _persist_turn(conversation_id, current_user["_id"], original_question, response, blocked=True, start_time=start)
             return response
 
-        progress.update(state.request_id, "Understanding your question…")
+        progress.update(state.request_id, "Document Agent: classifying your question…")
         classifier = IntentClassifier()
         result, timeout_event = await _run_with_timeout(
             classifier.classify_intent, state.question, model=state.model, stage="intent_classification"
@@ -353,6 +355,7 @@ async def _generate_chat_response(state: QAResponse, current_user: dict) -> dict
             _persist_turn(conversation_id, current_user["_id"], original_question, response, blocked=True, start_time=start)
             return response
         increment_usage(current_user["_id"], today, result.get("token_count", 0))
+        progress.update(state.request_id, "Guardrails Agent: reviewing safety & topic…")
         model_events = result.get("guardrail_events", [])
         guardrail_events = [input_check, documents_event, quota_event] + model_events
 
@@ -369,7 +372,7 @@ async def _generate_chat_response(state: QAResponse, current_user: dict) -> dict
             return response
 
         logger.info("Intent classified as '%s' with confidence %.2f", result["intent"], result["confidence"])
-        intent_event = evaluate_intent_detection(result["intent"], result["confidence"])
+        intent_event = guardrails_agent.check_intent_confidence(result["intent"], result["confidence"])
         guardrail_events = guardrail_events + [intent_event]
 
         if not intent_event["passed"]:

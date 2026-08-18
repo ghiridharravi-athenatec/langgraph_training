@@ -6,7 +6,7 @@ from fastapi.responses import StreamingResponse
 
 from app.core import config, db_connections, guardrail_config, progress
 from app.core.db_agent import run_db_agent
-from app.core.guardrails import validate_input, validate_output, validate_quota
+from app.core.guardrails_agent import guardrails_agent
 from app.core.logger import get_logger
 from app.core.messages import msg
 from app.core.rate_limit import rate_limit
@@ -190,7 +190,8 @@ def _generate_database_chat_response(payload: DatabaseChatRequest, current_user:
         # Same input guardrail (length/prompt-injection/blocked-keyword checks) the
         # document chatbot applies before it does anything else - a database question
         # deserves the same screening a document question gets.
-        input_check = validate_input(payload.question)
+        progress.update(payload.request_id, "Guardrails Agent: validating your question…")
+        input_check = guardrails_agent.check_input(payload.question)
         if not input_check["passed"]:
             logger.warning("Database chat request blocked by input guardrail: %s", input_check["reason"])
             return _persist_and_respond(
@@ -208,7 +209,8 @@ def _generate_database_chat_response(payload: DatabaseChatRequest, current_user:
         daily_quota = current_user.get("daily_token_quota")
         if daily_quota is None:
             daily_quota = guardrail_config.get_config()["daily_token_quota"]
-        quota_event = validate_quota(daily_usage, daily_quota)
+        progress.update(payload.request_id, "Guardrails Agent: checking your quota…")
+        quota_event = guardrails_agent.check_quota(daily_usage, daily_quota)
         if not quota_event["passed"]:
             logger.warning("Database chat request blocked by quota guardrail: %s", quota_event["reason"])
             return _persist_and_respond(
@@ -221,7 +223,7 @@ def _generate_database_chat_response(payload: DatabaseChatRequest, current_user:
         details = db_connections.decrypt_connection_details(connection["encrypted_details"])
         history = get_conversation_history(conversation_id, config.CHAT_HISTORY_MAX_TURNS)
 
-        progress.update(payload.request_id, "Inspecting the database…")
+        progress.update(payload.request_id, "Database Agent: inspecting the database…")
         result = run_db_agent(question, details, model=payload.model, history=history, request_id=payload.request_id)
         logger.info("Database chat answered for %s against connection '%s'", current_user["email"], connection["name"])
 
@@ -231,7 +233,8 @@ def _generate_database_chat_response(payload: DatabaseChatRequest, current_user:
         # result can just as easily contain real PII (names, emails, phone numbers in a
         # table) as an ingested document can, so it gets the same blocked-keyword/PII
         # masking pass before ever reaching the user.
-        output_event = validate_output(result["answer"])
+        progress.update(payload.request_id, "Guardrails Agent: checking the answer…")
+        output_event = guardrails_agent.check_output(result["answer"])
         blocked = not output_event["passed"]
         answer = output_event["sanitized_answer"] if output_event["passed"] else msg("output_validation.blocked_answer")
 

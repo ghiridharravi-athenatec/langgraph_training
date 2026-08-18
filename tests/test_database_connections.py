@@ -406,8 +406,8 @@ def test_database_chat_response_includes_timing_and_persists_it(client, admin_he
 def test_database_chat_answer_goes_through_the_output_guardrail(client, admin_headers, monkeypatch):
     '''Same output_validation pass (blocked-keyword check + PII masking) the
     document chatbot applies to its answers - proven here by swapping in a fake
-    validate_output rather than depending on Presidio's real NER detection, which
-    is already covered by its own unit tests.'''
+    GuardrailsAgent.check_output rather than depending on Presidio's real NER
+    detection, which is already covered by its own unit tests.'''
     monkeypatch.setattr("app.core.db_connections.test_connection", lambda details: ["users"])
     monkeypatch.setattr(
         "app.api.v1.database.run_db_agent",
@@ -416,7 +416,7 @@ def test_database_chat_answer_goes_through_the_output_guardrail(client, admin_he
         },
     )
     monkeypatch.setattr(
-        "app.api.v1.database.validate_output",
+        "app.core.guardrails_agent.guardrails_agent.check_output",
         lambda answer: {
             "stage": "output_validation", "passed": True, "reason": None,
             "sanitized_answer": "The admin's email is [EMAIL_MASKED].",
