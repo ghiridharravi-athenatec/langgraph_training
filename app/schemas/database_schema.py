@@ -51,3 +51,6 @@ class DatabaseChatRequest(BaseModel):
     # UI-facing Claude model choice ("haiku" | "sonnet" | "opus") - same mapping
     # as the document-chat /chat endpoint's `model` field.
     model: Optional[str] = None
+    # Client-generated (crypto.randomUUID()) - same live-progress mechanism as
+    # QAResponse.request_id (see app/core/progress.py). Optional and cosmetic only.
+    request_id: Optional[str] = None

@@ -37,6 +37,13 @@ const HOW_IT_WORKS = [
   },
 ];
 
+// Demo-only quick sign-in - fills the form fields below, doesn't submit on its
+// own, so the normal login flow (validation, error handling) still runs.
+const DEMO_ACCOUNTS = [
+  { label: "Admin", email: "admin@example.com", password: "Admin@123456" },
+  { label: "Data Loader", email: "dataloader@example.com", password: "DataLoader@123456" },
+];
+
 const FEATURE_HIGHLIGHTS = [
   "20+ automated guardrail checks",
   "Read-only, agentic database chat",
@@ -244,6 +251,26 @@ export default function Login() {
           <span className="auth-eyebrow">Guardrails Demonstration</span>
           <h1 className="auth-title">Welcome back</h1>
           <p className="auth-subtitle">Log in to continue to AI Assistance</p>
+
+          <div className="auth-demo-accounts">
+            <span className="auth-demo-accounts-label">Quick sign-in</span>
+            <div className="auth-demo-accounts-row">
+              {DEMO_ACCOUNTS.map((account) => (
+                <button
+                  key={account.email}
+                  type="button"
+                  className="auth-demo-account-btn"
+                  onClick={() => {
+                    setEmail(account.email);
+                    setPassword(account.password);
+                    setError("");
+                  }}
+                >
+                  {account.label}
+                </button>
+              ))}
+            </div>
+          </div>
 
           <form onSubmit={handleSubmit} className="auth-form">
             <label className="field">

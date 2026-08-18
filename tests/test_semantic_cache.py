@@ -1,7 +1,7 @@
 from langchain_community.embeddings import HuggingFaceEmbeddings
 
 from app.core.semantic_cache import find_cache_match
-from tests.conftest import seed_document, signup
+from tests.conftest import parse_sse_response, seed_document, signup
 
 
 def _patch_embed_query(monkeypatch, fn):
@@ -153,15 +153,17 @@ def test_semantic_cache_hit_skips_the_expensive_pipeline(client, admin_headers, 
     first = client.post("/api/v1/chat", json={"question": "what is the warranty period"}, headers=admin_headers)
     assert first.status_code == 200
     assert call_count["n"] == 1
-    first_cache_event = next(e for e in first.json()["graph_response"]["guardrail_events"] if e["stage"] == "semantic_cache")
+    first_body = parse_sse_response(first)
+    first_cache_event = next(e for e in first_body["graph_response"]["guardrail_events"] if e["stage"] == "semantic_cache")
     assert first_cache_event["cache_hit"] is False
 
     second = client.post("/api/v1/chat", json={"question": "how long is the warranty"}, headers=admin_headers)
     assert second.status_code == 200
     assert call_count["n"] == 1  # not incremented - the retrieval/generation pipeline was never invoked
-    assert second.json()["message"] == "Chat completed successfully (cached)"
-    assert second.json()["answer"] == "The warranty lasts 12 months."
-    second_cache_event = next(e for e in second.json()["graph_response"]["guardrail_events"] if e["stage"] == "semantic_cache")
+    second_body = parse_sse_response(second)
+    assert second_body["message"] == "Chat completed successfully (cached)"
+    assert second_body["answer"] == "The warranty lasts 12 months."
+    second_cache_event = next(e for e in second_body["graph_response"]["guardrail_events"] if e["stage"] == "semantic_cache")
     assert second_cache_event["cache_hit"] is True
     assert second_cache_event["similarity"] > 0.9
     assert second_cache_event["matched_question"] == "what is the warranty period"
@@ -192,7 +194,7 @@ def test_semantic_cache_never_reused_across_users(client, admin_headers, monkeyp
     # Identical embedding, but Bob has no history of his own - never reuses Alice's answer.
     resp = client.post("/api/v1/chat", json={"question": "what is the warranty period"}, headers=bob_headers)
     assert call_count["n"] == 2
-    cache_event = next(e for e in resp.json()["graph_response"]["guardrail_events"] if e["stage"] == "semantic_cache")
+    cache_event = next(e for e in parse_sse_response(resp)["graph_response"]["guardrail_events"] if e["stage"] == "semantic_cache")
     assert cache_event["cache_hit"] is False
 
 
@@ -221,5 +223,5 @@ def test_blocked_answers_never_become_cache_candidates(client, admin_headers, ad
     # A second, identical-embedding question must NOT hit the (blocked, never-cached) first answer.
     resp = client.post("/api/v1/chat", json={"question": "what is the warranty period"}, headers=admin_headers)
     assert call_count["n"] == 2
-    cache_event = next(e for e in resp.json()["graph_response"]["guardrail_events"] if e["stage"] == "semantic_cache")
+    cache_event = next(e for e in parse_sse_response(resp)["graph_response"]["guardrail_events"] if e["stage"] == "semantic_cache")
     assert cache_event["cache_hit"] is False

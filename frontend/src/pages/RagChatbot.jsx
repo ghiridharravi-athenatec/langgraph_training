@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import api, { formatErrorDetail } from "../api/client";
+import api, { formatErrorDetail, streamChat } from "../api/client";
 import GuardrailPanel from "../components/GuardrailPanel";
 import DocumentsPanel from "../components/DocumentsPanel";
 import ModelPicker from "../components/ModelPicker";
@@ -19,8 +19,12 @@ const SECTIONS = [
   { id: "tracing", label: "Tracing", icon: "≋" },
 ];
 
+// Fallback cycling text only - shown before the first live stage arrives (or if
+// polling never succeeds at all). Kept in the same order the real pipeline
+// stages actually fire in, so the fallback and the live version read the same.
 const THINKING_MESSAGES = [
   "Reading your question…",
+  "Understanding your question…",
   "Searching your documents…",
   "Reviewing relevant passages…",
   "Drafting an answer…",
@@ -48,7 +52,7 @@ const PII_ENTITY_LABELS = {
 };
 
 export default function RagChatbot() {
-  const { user, logout } = useAuth();
+  const { user, logout, isAdmin } = useAuth();
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeSection, setActiveSection] = useState("chat");
@@ -60,7 +64,9 @@ export default function RagChatbot() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [liveStage, setLiveStage] = useState("");
   const [openLogsIndex, setOpenLogsIndex] = useState(null);
+  const [pendingTraceTurnId, setPendingTraceTurnId] = useState(null);
 
   const [file, setFile] = useState(null);
   const [ingestStatus, setIngestStatus] = useState(null);
@@ -137,6 +143,7 @@ export default function RagChatbot() {
           graph_response: m.graph_response,
           cached: m.cached,
           response_time_ms: m.response_time_ms,
+          turn_id: m.turn_id,
         }))
       );
     } catch {
@@ -148,6 +155,11 @@ export default function RagChatbot() {
     setActiveConversationId(null);
     setMessages([]);
     setOpenLogsIndex(null);
+  }
+
+  function viewTrace(turnId) {
+    setPendingTraceTurnId(turnId);
+    setActiveSection("tracing");
   }
 
   async function deleteConversationById(e, conversationId) {
@@ -171,30 +183,79 @@ export default function RagChatbot() {
     setMessages((prev) => [...prev, { role: "user", content: question }]);
     setInput("");
     setSending(true);
+    setLiveStage("");
+
+    // Polled while the request is in flight - GET /progress/{request_id} reports
+    // whichever pipeline stage last ran (see app/core/progress.py), so the
+    // "thinking" indicator reflects real backend progress instead of just
+    // cycling a fixed list on a timer.
+    const requestId = crypto.randomUUID();
+    const pollId = setInterval(async () => {
+      try {
+        const { data } = await api.get(`/progress/${requestId}`);
+        if (data.stage) setLiveStage(data.stage);
+      } catch {
+        // Non-critical - the fallback cycling text just keeps showing.
+      }
+    }, 600);
+
+    // Once the full answer is generated and has passed every guardrail
+    // server-side, it's streamed back in small chunks purely for a typewriter
+    // reveal - see app/core/streaming.py for why this isn't raw generation-time
+    // token streaming. streamStarted flips the moment the first chunk arrives,
+    // swapping the ThinkingIndicator for a growing assistant bubble.
+    let streamStarted = false;
 
     try {
-      const { data } = await api.post("/chat", { question, conversation_id: activeConversationId, model: selectedModel });
-      setMessages((prev) => [
-        ...prev,
+      const data = await streamChat(
+        "/chat",
+        { question, conversation_id: activeConversationId, model: selectedModel, request_id: requestId },
         {
-          role: "assistant",
-          content: data.answer || "No answer received.",
-          logs: data.logs,
-          graph_response: data.graph_response,
-          cached: data.graph_response?.guardrail_events?.some((ev) => ev.stage === "semantic_cache" && ev.cache_hit),
-          response_time_ms: data.response_time_ms,
-        },
-      ]);
+          onDelta: (text) => {
+            setMessages((prev) => {
+              if (!streamStarted) {
+                streamStarted = true;
+                return [...prev, { role: "assistant", content: text, streaming: true }];
+              }
+              const next = [...prev];
+              const last = next[next.length - 1];
+              next[next.length - 1] = { ...last, content: last.content + text };
+              return next;
+            });
+          },
+        }
+      );
+
+      const finalMessage = {
+        role: "assistant",
+        content: data.answer || "No answer received.",
+        logs: data.logs,
+        graph_response: data.graph_response,
+        cached: data.graph_response?.guardrail_events?.some((ev) => ev.stage === "semantic_cache" && ev.cache_hit),
+        response_time_ms: data.response_time_ms,
+        turn_id: data.turn_id,
+      };
+      setMessages((prev) => {
+        if (!streamStarted) return [...prev, finalMessage];
+        const next = [...prev];
+        next[next.length - 1] = finalMessage;
+        return next;
+      });
       if (data.conversation_id && data.conversation_id !== activeConversationId) {
         setActiveConversationId(data.conversation_id);
       }
       loadConversations();
     } catch (err) {
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: `Error: ${formatErrorDetail(err, "Failed to reach the backend.")}` },
-      ]);
+      const errorMessage = { role: "assistant", content: `Error: ${formatErrorDetail(err, "Failed to reach the backend.")}` };
+      setMessages((prev) => {
+        if (!streamStarted) return [...prev, errorMessage];
+        const next = [...prev];
+        next[next.length - 1] = errorMessage;
+        return next;
+      });
     } finally {
+      clearInterval(pollId);
+      setLiveStage("");
       setSending(false);
     }
   }
@@ -334,11 +395,18 @@ export default function RagChatbot() {
                           {formatResponseTime(msg.response_time_ms)}
                         </span>
                       )}
+                      {isAdmin && msg.role === "assistant" && msg.turn_id && (
+                        <button type="button" className="chat-logs-toggle" onClick={() => viewTrace(msg.turn_id)}>
+                          View Trace
+                        </button>
+                      )}
                       {openLogsIndex === i && <GuardrailPanel logs={msg.logs} graphResponse={msg.graph_response} />}
                     </div>
                   ))}
 
-                  {sending && <ThinkingIndicator messages={THINKING_MESSAGES} />}
+                  {sending && !messages[messages.length - 1]?.streaming && (
+                    <ThinkingIndicator messages={THINKING_MESSAGES} liveStage={liveStage} />
+                  )}
                 </div>
               </div>
 
@@ -443,7 +511,13 @@ export default function RagChatbot() {
 
         {activeSection === "documents" && <DocumentsPanel />}
 
-        {activeSection === "tracing" && <TracingTab projectId="ragchatbot" />}
+        {activeSection === "tracing" && (
+          <TracingTab
+            projectId="ragchatbot"
+            initialTurnId={pendingTraceTurnId}
+            onConsumedInitialTurn={() => setPendingTraceTurnId(null)}
+          />
+        )}
       </main>
     </div>
   );

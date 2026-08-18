@@ -164,7 +164,21 @@ const INPUT_LENGTH_GROUP = {
 
 const QUOTA_GROUP = {
   name: "Quota",
-  fields: [],
+  // Only field here is the global default - per-user overrides are a separate,
+  // admin-only control (UserQuotaEditor, rendered above these fields for admins
+  // only). Without this field the card was entirely empty for non-admins, since
+  // UserQuotaEditor never renders for them.
+  fields: [
+    {
+      key: "daily_token_quota",
+      label: "Default daily token quota",
+      type: "number",
+      min: 0,
+      max: 100000000,
+      step: 1000,
+      hint: "Applies to every user unless overridden per-user below (admin only).",
+    },
+  ],
 };
 
 const INPUT_PII_DETECTION_GROUP = {
@@ -214,6 +228,18 @@ const INTENT_GROUP = {
   fields: [{ key: "intent_confidence_threshold", label: "Minimum confidence to route", type: "score" }],
 };
 
+const TOPIC_RESTRICTION_GROUP = {
+  name: "Topic restriction",
+  fields: [
+    {
+      key: "allowed_topics",
+      label: "Approved topics",
+      type: "tags",
+      hint: "Empty means no topic restriction is applied. Judged by the model alongside intent classification.",
+    },
+  ],
+};
+
 const SEMANTIC_CACHE_GROUP = {
   name: "Semantic cache",
   fields: [
@@ -250,6 +276,42 @@ const OUTPUT_GROUP = {
   ],
 };
 
+const COMPLIANCE_GROUP = {
+  name: "Compliance",
+  fields: [
+    {
+      key: "compliance_keywords",
+      label: "Regulated-claim phrases",
+      type: "tags",
+      hint: "Checked on the generated answer; blocks the response if matched.",
+    },
+  ],
+};
+
+const TONE_GROUP = {
+  name: "Tone calibration",
+  fields: [
+    {
+      key: "tone_calibration_enabled",
+      label: "Enabled",
+      type: "boolean",
+      hint: "Flags informal phrasing (shouting punctuation, slang) in the answer without blocking it.",
+    },
+  ],
+};
+
+const BIAS_GROUP = {
+  name: "Bias detection",
+  fields: [
+    {
+      key: "bias_detection_enabled",
+      label: "Enabled",
+      type: "boolean",
+      hint: "Model self-reports unfair characterization in its own answer, riding on the answer-generation call; blocks if flagged.",
+    },
+  ],
+};
+
 // Mirrors the Guardrails catalog's layout: Input -> Retrieval -> Output, each
 // split into its Deterministic (fixed rules/thresholds) and Model-based
 // (Gemini judgment, or an embedding/NER model's score) settings.
@@ -258,7 +320,7 @@ const CONFIG_FIELD_CATEGORIES = [
     name: "Input",
     subgroups: [
       { name: "Deterministic", groups: [INPUT_LENGTH_GROUP, QUOTA_GROUP] },
-      { name: "Model-based", groups: [INPUT_PII_DETECTION_GROUP, MODEL_SAFETY_GROUP, INTENT_GROUP] },
+      { name: "Model-based", groups: [INPUT_PII_DETECTION_GROUP, MODEL_SAFETY_GROUP, INTENT_GROUP, TOPIC_RESTRICTION_GROUP] },
     ],
   },
   {
@@ -271,8 +333,8 @@ const CONFIG_FIELD_CATEGORIES = [
   {
     name: "Output",
     subgroups: [
-      { name: "Deterministic", groups: [OUTPUT_GROUP] },
-      { name: "Model-based", groups: [OUTPUT_PII_DETECTION_GROUP, MODEL_SAFETY_GROUP, ANSWER_QUALITY_GROUP] },
+      { name: "Deterministic", groups: [OUTPUT_GROUP, COMPLIANCE_GROUP, TONE_GROUP] },
+      { name: "Model-based", groups: [OUTPUT_PII_DETECTION_GROUP, MODEL_SAFETY_GROUP, ANSWER_QUALITY_GROUP, BIAS_GROUP] },
     ],
   },
 ];
@@ -369,6 +431,15 @@ function TagsField({ value, onChange, disabled }) {
   );
 }
 
+function BooleanField({ value, onChange, disabled }) {
+  return (
+    <label className="gr-checkbox-row">
+      <input type="checkbox" checked={!!value} disabled={disabled} onChange={(e) => onChange(e.target.checked)} />
+      {value ? "Enabled" : "Disabled"}
+    </label>
+  );
+}
+
 function CheckboxesField({ field, value, onChange, disabled }) {
   return (
     <div className="gr-checkboxes">
@@ -413,6 +484,8 @@ function ConfigField({ field, value, onChange, disabled }) {
       return <CheckboxesField field={field} value={value} onChange={onChange} disabled={disabled} />;
     case "select":
       return <SelectField field={field} value={value} onChange={onChange} disabled={disabled} />;
+    case "boolean":
+      return <BooleanField value={value} onChange={onChange} disabled={disabled} />;
     default:
       return null;
   }
@@ -629,8 +702,8 @@ function GuardrailsTab() {
           )}
 
           <div className="traces-guardrail-catalog traces-guardrail-accordion">
-            {CONFIG_FIELD_CATEGORIES.map((category, i) => (
-              <AccordionSection key={category.name} title={CATEGORY_LABELS[category.name] || category.name} defaultOpen={i === 0}>
+            {CONFIG_FIELD_CATEGORIES.map((category) => (
+              <AccordionSection key={category.name} title={CATEGORY_LABELS[category.name] || category.name}>
                 <div className="gr-config-groups">
                   {category.subgroups.flatMap((sub) => sub.groups).map((group) => (
                     <div key={group.name} className="ingest-card gr-config-group">
@@ -679,8 +752,8 @@ function GuardrailsTab() {
       </div>
 
       <div className="traces-guardrail-catalog traces-guardrail-accordion">
-        {catalogGroups.map((category, i) => (
-          <AccordionSection key={category.name} title={CATEGORY_LABELS[category.name] || category.name} defaultOpen={i === 0}>
+        {catalogGroups.map((category) => (
+          <AccordionSection key={category.name} title={CATEGORY_LABELS[category.name] || category.name}>
             <div className="traces-guardrail-catalog-list">
               {category.subgroups.flatMap((sub) => sub.items).map((item) => (
                 <div key={item.id} className="traces-guardrail-catalog-item">
@@ -899,10 +972,36 @@ function TracingTurnDetail({ user, turn, onBackToUsers, onBackToQuestions }) {
   );
 }
 
-export function TracingTab({ projectId } = {}) {
+export function TracingTab({ projectId, initialTurnId, onConsumedInitialTurn } = {}) {
   const { isAdmin, user: authUser } = useAuth();
   const [selectedUser, setSelectedUser] = useState(null);
   const [selectedTurn, setSelectedTurn] = useState(null);
+  const [deepLinkStatus, setDeepLinkStatus] = useState(initialTurnId ? "loading" : "idle");
+  const [deepLinkError, setDeepLinkError] = useState("");
+
+  // "View Trace" from a chat answer - jump straight to that turn's detail (always
+  // the current user's own, admin or not), skipping the user-list/question-list
+  // steps entirely. Single-turn fetch (GET /traces/turns/{id}) rather than pulling
+  // the user's whole trace list just to find one row.
+  useEffect(() => {
+    if (!initialTurnId) return;
+    setDeepLinkStatus("loading");
+    setDeepLinkError("");
+    api
+      .get(`/traces/turns/${initialTurnId}`)
+      .then(({ data }) => {
+        setSelectedUser(authUser ? { id: authUser.id, email: authUser.email } : null);
+        setSelectedTurn(data);
+        setDeepLinkStatus("idle");
+        onConsumedInitialTurn?.();
+      })
+      .catch((err) => {
+        setDeepLinkError(formatErrorDetail(err, "Failed to load this trace."));
+        setDeepLinkStatus("error");
+        onConsumedInitialTurn?.();
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialTurnId]);
 
   // A non-admin only ever has themselves to pick - the backend only returns their own
   // tracing data anyway (see traces.py's _ensure_self_or_admin), so skip the "pick a
@@ -910,6 +1009,22 @@ export function TracingTab({ projectId } = {}) {
   const effectiveUser = isAdmin
     ? selectedUser
     : selectedUser || (authUser ? { id: authUser.id, email: authUser.email } : null);
+
+  if (deepLinkStatus === "loading") {
+    return (
+      <div className="traces-page">
+        <p className="muted">Loading trace…</p>
+      </div>
+    );
+  }
+
+  if (deepLinkStatus === "error") {
+    return (
+      <div className="traces-page">
+        <p className="form-error">{deepLinkError}</p>
+      </div>
+    );
+  }
 
   if (effectiveUser && selectedTurn) {
     return (

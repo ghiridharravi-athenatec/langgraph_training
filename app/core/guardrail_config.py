@@ -6,7 +6,9 @@ screen for any user, not the admin-only Guardrails page - see the
 `ingest_pii_entities` comment below), daily quota, model-safety
 categories/threshold, intent
 confidence, semantic cache thresholds, retrieval relevance, context budget,
-groundedness, URL allowlist, and answer length. Structural checks (the
+groundedness, URL allowlist, answer length, the approved-topics list (topic
+restriction), the regulated-claim phrase list (compliance validation), and
+the bias-detection/tone-calibration enable toggles. Structural checks (the
 injection regex, the LLM injection-judgment prompt, JSON schema validation,
 collection authorization) are deliberately NOT here - see
 app/api/v1/guardrail_settings.py for why those stay fixed in code.
@@ -92,6 +94,16 @@ DEFAULTS: Dict[str, Any] = {
     "min_groundedness_score": config.MIN_GROUNDEDNESS_SCORE,
     "allowed_url_domains": list(config.ALLOWED_URL_DOMAINS),
     "max_answer_length": 6000,
+    # Empty = no restriction (default, so existing projects are unaffected). When
+    # set, the intent-classification call also judges whether the question's
+    # subject matter falls within this list - see guardrails.build_topic_restriction_instructions.
+    "allowed_topics": [],
+    # Definitive regulated-claim phrases (financial/medical/legal) that block the
+    # generated answer, same mechanism as blocked_keywords but a separate list
+    # since these are about liability/compliance, not safety.
+    "compliance_keywords": ["guaranteed returns", "guaranteed profit", "risk-free investment", "guaranteed to cure"],
+    "bias_detection_enabled": True,
+    "tone_calibration_enabled": True,
 }
 
 _cache: Dict[str, Any] = dict(DEFAULTS)

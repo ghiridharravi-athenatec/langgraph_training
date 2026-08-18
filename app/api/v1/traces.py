@@ -7,6 +7,7 @@ from app.schemas.trace_schema import TraceConversationOut, TraceMessageOut, Trac
 from app.utils.mongo import (
     ROLE_ADMIN,
     get_conversation,
+    get_trace_turn,
     get_user_by_id,
     list_conversations_with_message_counts,
     list_messages,
@@ -84,6 +85,30 @@ def list_user_trace_turns(user_id: str, project_id: Optional[str] = None, curren
     ]
 
 
+@router.get("/turns/{turn_id}", response_model=TraceTurnOut)
+def get_trace_turn_detail(turn_id: str, current_user: dict = Depends(_require_traces_access)):
+    '''Single-turn lookup by the user message's id, for the chat screen's "View Trace"
+    link - jumps straight to one turn's detail without fetching the user's whole trace
+    list first (see mongo.get_trace_turn).'''
+    turn = get_trace_turn(turn_id)
+    if turn is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Trace turn not found")
+    _ensure_self_or_admin(current_user, turn["user_id"])
+    return TraceTurnOut(
+        id=turn["_id"],
+        conversation_id=turn["conversation_id"],
+        question=turn["question"],
+        answer=turn["answer"],
+        created_at=turn["created_at"],
+        logs=turn.get("logs"),
+        graph_response=turn.get("graph_response"),
+        guardrail_events=turn.get("guardrail_events"),
+        cached=turn.get("cached"),
+        blocked=turn.get("blocked"),
+        response_time_ms=turn.get("response_time_ms"),
+    )
+
+
 @router.get("/conversations/{conversation_id}/messages", response_model=list[TraceMessageOut])
 def get_conversation_trace(conversation_id: str, current_user: dict = Depends(_require_traces_access)):
     conversation = get_conversation(conversation_id)
@@ -102,6 +127,7 @@ def get_conversation_trace(conversation_id: str, current_user: dict = Depends(_r
             blocked=m.get("blocked"),
             response_time_ms=m.get("response_time_ms"),
             created_at=m["created_at"],
+            turn_id=m.get("turn_id"),
         )
         for m in list_messages(conversation_id)
     ]

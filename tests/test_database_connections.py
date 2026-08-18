@@ -10,7 +10,7 @@ from app.utils.mongo import (
     increment_usage,
     list_database_connections,
 )
-from tests.conftest import signup
+from tests.conftest import parse_sse_response, signup
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +225,7 @@ def test_database_chat_runs_agent_against_decrypted_connection(client, admin_hea
 
     captured = {}
 
-    def fake_run_db_agent(question, details, model=None, history=None):
+    def fake_run_db_agent(question, details, model=None, history=None, request_id=None):
         captured["question"] = question
         captured["details"] = details
         captured["model"] = model
@@ -245,7 +245,7 @@ def test_database_chat_runs_agent_against_decrypted_connection(client, admin_hea
         headers=admin_headers,
     )
     assert resp.status_code == 200
-    body = resp.json()
+    body = parse_sse_response(resp)
     assert body["answer"] == "There are 42 users."
     assert body["message"] == "Chat completed successfully"
     assert body["conversation_id"]
@@ -261,7 +261,7 @@ def test_database_chat_auto_creates_conversation_and_persists_turns(client, admi
     monkeypatch.setattr("app.core.db_connections.test_connection", lambda details: ["users"])
     monkeypatch.setattr(
         "app.api.v1.database.run_db_agent",
-        lambda question, details, model=None, history=None: {
+        lambda question, details, model=None, history=None, request_id=None: {
             "answer": "42 users.", "guardrail_events": [], "logs": [], "token_count": 0,
         },
     )
@@ -276,12 +276,17 @@ def test_database_chat_auto_creates_conversation_and_persists_turns(client, admi
         json={"connection_id": created["id"], "question": "how many users?"},
         headers=admin_headers,
     )
-    conversation_id = resp.json()["conversation_id"]
+    chat_body = parse_sse_response(resp)
+    conversation_id = chat_body["conversation_id"]
+    turn_id = chat_body["turn_id"]
+    assert turn_id
 
     messages = client.get(f"/api/v1/database/conversations/{conversation_id}/messages", headers=admin_headers).json()
     assert len(messages) == 2
     assert messages[0]["role"] == "user" and messages[0]["content"] == "how many users?"
+    assert messages[0]["id"] == turn_id
     assert messages[1]["role"] == "assistant" and messages[1]["content"] == "42 users."
+    assert messages[1]["turn_id"] == turn_id
 
     conversations = client.get("/api/v1/database/conversations", headers=admin_headers).json()
     assert conversations[0]["connection_id"] == created["id"]
@@ -305,7 +310,7 @@ def test_database_chat_second_turn_receives_first_turns_history(client, admin_he
 
     captured = {}
 
-    def fake_run_db_agent(question, details, model=None, history=None):
+    def fake_run_db_agent(question, details, model=None, history=None, request_id=None):
         captured["history"] = history
         return {"answer": "42 users.", "guardrail_events": [], "logs": [], "token_count": 0}
 
@@ -316,7 +321,7 @@ def test_database_chat_second_turn_receives_first_turns_history(client, admin_he
         json={"connection_id": created["id"], "question": "how many users?"},
         headers=admin_headers,
     )
-    conversation_id = first.json()["conversation_id"]
+    conversation_id = parse_sse_response(first)["conversation_id"]
     assert captured["history"] == []
 
     client.post(
@@ -349,7 +354,7 @@ def test_conversation_stays_pinned_to_its_original_connection(client, admin_head
 
     captured = {}
 
-    def fake_run_db_agent(question, details, model=None, history=None):
+    def fake_run_db_agent(question, details, model=None, history=None, request_id=None):
         captured["details"] = details
         return {"answer": "ok", "guardrail_events": [], "logs": [], "token_count": 0}
 
@@ -360,7 +365,7 @@ def test_conversation_stays_pinned_to_its_original_connection(client, admin_head
         json={"connection_id": first_db["id"], "question": "hi"},
         headers=admin_headers,
     )
-    conversation_id = first.json()["conversation_id"]
+    conversation_id = parse_sse_response(first)["conversation_id"]
     assert captured["details"]["database"] == "d"
 
     client.post(
@@ -375,7 +380,7 @@ def test_database_chat_response_includes_timing_and_persists_it(client, admin_he
     monkeypatch.setattr("app.core.db_connections.test_connection", lambda details: ["users"])
     monkeypatch.setattr(
         "app.api.v1.database.run_db_agent",
-        lambda question, details, model=None, history=None: {
+        lambda question, details, model=None, history=None, request_id=None: {
             "answer": "42 users.", "guardrail_events": [], "logs": [], "token_count": 0,
         },
     )
@@ -390,7 +395,7 @@ def test_database_chat_response_includes_timing_and_persists_it(client, admin_he
         json={"connection_id": created["id"], "question": "how many users?"},
         headers=admin_headers,
     )
-    body = resp.json()
+    body = parse_sse_response(resp)
     assert isinstance(body["response_time_ms"], (int, float))
     assert body["response_time_ms"] >= 0
 
@@ -406,7 +411,7 @@ def test_database_chat_answer_goes_through_the_output_guardrail(client, admin_he
     monkeypatch.setattr("app.core.db_connections.test_connection", lambda details: ["users"])
     monkeypatch.setattr(
         "app.api.v1.database.run_db_agent",
-        lambda question, details, model=None, history=None: {
+        lambda question, details, model=None, history=None, request_id=None: {
             "answer": "The admin's email is admin@example.com.", "guardrail_events": [], "logs": [], "token_count": 0,
         },
     )
@@ -429,7 +434,7 @@ def test_database_chat_answer_goes_through_the_output_guardrail(client, admin_he
         json={"connection_id": created["id"], "question": "what is the admin's email?"},
         headers=admin_headers,
     )
-    body = resp.json()
+    body = parse_sse_response(resp)
     assert body["answer"] == "The admin's email is [EMAIL_MASKED]."
     assert "admin@example.com" not in body["answer"]
     output_event = next(e for e in body["guardrail_events"] if e["stage"] == "output_validation")
@@ -457,6 +462,44 @@ def test_database_chat_rejects_a_document_chatbot_conversation_id(client, admin_
     assert resp.status_code == 404
 
 
+def test_database_chat_gives_an_actionable_error_when_the_conversations_connection_was_deleted(
+    client, admin_headers, monkeypatch
+):
+    '''Regression test: a conversation pinned to a connection that's since been deleted
+    used to surface a bare "Database connection not found" - now it explains what
+    happened and how to recover (see _get_owned_connection's not_found_detail).'''
+    monkeypatch.setattr("app.core.db_connections.test_connection", lambda details: ["users"])
+    monkeypatch.setattr(
+        "app.api.v1.database.run_db_agent",
+        lambda question, details, model=None, history=None, request_id=None: {
+            "answer": "42 users.", "guardrail_events": [], "logs": [], "token_count": 0,
+        },
+    )
+    created = client.post(
+        "/api/v1/database/connections",
+        json={"name": "Prod", "engine": "postgresql", "host": "h", "username": "u", "password": "p", "database": "d"},
+        headers=admin_headers,
+    ).json()
+
+    first = client.post(
+        "/api/v1/database/chat",
+        json={"connection_id": created["id"], "question": "how many users?"},
+        headers=admin_headers,
+    )
+    conversation_id = parse_sse_response(first)["conversation_id"]
+
+    assert client.delete(f"/api/v1/database/connections/{created['id']}", headers=admin_headers).status_code == 204
+
+    resp = client.post(
+        "/api/v1/database/chat",
+        json={"connection_id": created["id"], "question": "how many users now?", "conversation_id": conversation_id},
+        headers=admin_headers,
+    )
+    assert resp.status_code == 404
+    assert "deleted" in resp.json()["detail"].lower()
+    assert "new chat" in resp.json()["detail"].lower()
+
+
 # ---------------------------------------------------------------------------
 # Input guardrail + quota enforcement (parity with the document chatbot)
 # ---------------------------------------------------------------------------
@@ -465,7 +508,7 @@ def test_database_chat_blocked_by_input_guardrail_never_reaches_the_agent(client
     monkeypatch.setattr("app.core.db_connections.test_connection", lambda details: ["users"])
     calls = {"n": 0}
 
-    def fake_run_db_agent(question, details, model=None, history=None):
+    def fake_run_db_agent(question, details, model=None, history=None, request_id=None):
         calls["n"] += 1
         return {"answer": "should not run", "guardrail_events": [], "logs": [], "token_count": 0}
 
@@ -482,10 +525,11 @@ def test_database_chat_blocked_by_input_guardrail_never_reaches_the_agent(client
         headers=admin_headers,
     )
     assert resp.status_code == 200
-    assert resp.json()["message"] == "Request blocked by input validation"
+    chat_body = parse_sse_response(resp)
+    assert chat_body["message"] == "Request blocked by input validation"
     assert calls["n"] == 0
 
-    conversation_id = resp.json()["conversation_id"]
+    conversation_id = chat_body["conversation_id"]
     messages = client.get(f"/api/v1/database/conversations/{conversation_id}/messages", headers=admin_headers).json()
     assert len(messages) == 2
     assert messages[1]["blocked"] is True
@@ -507,7 +551,7 @@ def test_database_chat_blocked_by_quota(client, admin_headers, monkeypatch):
         headers=admin_headers,
     )
     assert resp.status_code == 200
-    assert resp.json()["message"] == "Request blocked by quota"
+    assert parse_sse_response(resp)["message"] == "Request blocked by quota"
 
 
 # ---------------------------------------------------------------------------
@@ -539,7 +583,7 @@ def test_edit_connection_updates_fields_and_reconnects_with_new_credentials(clie
 
     captured = {}
 
-    def fake_run_db_agent(question, details, model=None, history=None):
+    def fake_run_db_agent(question, details, model=None, history=None, request_id=None):
         captured["details"] = details
         return {"answer": "ok", "guardrail_events": [], "logs": [], "token_count": 0}
 
@@ -599,7 +643,7 @@ def test_guardrail_events_round_trip_through_conversation_history(client, admin_
     monkeypatch.setattr("app.core.db_connections.test_connection", lambda details: ["users"])
     monkeypatch.setattr(
         "app.api.v1.database.run_db_agent",
-        lambda question, details, model=None, history=None: {
+        lambda question, details, model=None, history=None, request_id=None: {
             "answer": "42 users.",
             "guardrail_events": [{"stage": "db_agent_tool_call", "tool": "run_query", "passed": True, "reason": None}],
             "logs": [],
@@ -617,7 +661,7 @@ def test_guardrail_events_round_trip_through_conversation_history(client, admin_
         json={"connection_id": created["id"], "question": "how many users are there"},
         headers=admin_headers,
     )
-    conversation_id = resp.json()["conversation_id"]
+    conversation_id = parse_sse_response(resp)["conversation_id"]
 
     messages = client.get(f"/api/v1/database/conversations/{conversation_id}/messages", headers=admin_headers).json()
     tool_events = [e for e in messages[1]["guardrail_events"] if e["stage"] == "db_agent_tool_call"]

@@ -381,6 +381,19 @@ def validate_context_budget(chunks: List[Dict[str, Any]], stage: str = "context_
 
 _URL_RE = re.compile(r"https?://([^\s/]+)(?:/\S*)?", re.IGNORECASE)
 
+# Tone calibration - fixed in code (like the injection regex above), not
+# admin-editable: flags shouting punctuation and casual slang as a drift from
+# a professional tone. Advisory only, same non-blocking treatment as the URL
+# allowlist below - a document/database Q&A answer shouldn't be *rejected*
+# over tone, just flagged in the trace.
+_TONE_RE = re.compile(
+    r"(!{2,}|\?{2,}|\b(?:gonna|wanna|gotta|lol|omg|yeah|nope|kinda|sorta|dunno)\b)", re.IGNORECASE
+)
+
+
+def _detect_tone_issues(text: str) -> List[str]:
+    return sorted({m.lower() for m in _TONE_RE.findall(text)})
+
 
 def _redact_urls(text: str) -> tuple:
     '''Strips any URL whose domain isn't allowlisted (empty by default - there's
@@ -420,6 +433,13 @@ def validate_output(answer: str) -> Dict[str, Any]:
         "reason": msg("output_validation.blocked_keyword") if keyword_hit else None,
     })
 
+    compliance_hit = not_empty and any(kw in answer.lower() for kw in cfg.get("compliance_keywords", []))
+    checks.append({
+        "check": "compliance_validation",
+        "passed": not compliance_hit,
+        "reason": msg("output_validation.compliance_keyword") if compliance_hit else None,
+    })
+
     failed = next((c for c in checks if not c["passed"]), None)
     if failed:
         logger.warning("Guardrail blocked at output_validation.%s: %s", failed["check"], failed["reason"])
@@ -451,6 +471,14 @@ def validate_output(answer: str) -> Dict[str, Any]:
         "passed": True,
         "reason": msg("output_validation.truncated", max_length=max_answer_length) if truncated else None,
     })
+
+    if cfg.get("tone_calibration_enabled", True):
+        tone_flags = _detect_tone_issues(sanitized)
+        checks.append({
+            "check": "tone_check",
+            "passed": True,
+            "reason": msg("output_validation.tone_flagged", flags=", ".join(tone_flags)) if tone_flags else None,
+        })
 
     logger.info("Output validation passed (length=%d)", len(sanitized))
     return _event("output_validation", True, None, sanitized_answer=sanitized, pii_detected=pii_detected, checks=checks)
@@ -674,6 +702,76 @@ def validate_has_documents(has_documents: bool, stage: str = "documents_check") 
         return _event(stage, False, reason)
 
     logger.info("Knowledge base check passed at %s", stage)
+    return _event(stage, True, None)
+
+
+# ---------------------------------------------------------------------------
+# Topic restriction guardrail
+#
+# Optional and off by default (guardrail_config's allowed_topics is empty) -
+# only the document pipeline uses this, riding on the same classify_intent
+# call as the prompt-injection/intent-detection judgments (one more field on
+# the same JSON response, no extra round-trip). The database chatbot doesn't
+# use classify_intent at all (it's an agentic tool-calling loop - see
+# db_agent.py), so this guardrail doesn't apply there.
+# ---------------------------------------------------------------------------
+
+def build_topic_restriction_instructions() -> Optional[str]:
+    '''Returns the extra classification instructions to append to the intent-classification
+    prompt, or None if no allowed_topics are configured - callers should skip asking for
+    (and parsing) topic_in_scope entirely when this returns None, so the check stays a clean
+    "not run" in the trace rather than a permissive pass on every turn.'''
+    topics = guardrail_config.get_config().get("allowed_topics") or []
+    if not topics:
+        return None
+    topic_list = ", ".join(topics)
+    return f"""
+Step 3 - Decide whether the User Query's subject matter clearly falls within one of these
+approved topics: {topic_list}. If it's a genuine question but doesn't fit any of these
+topics, set topic_in_scope to false.
+"""
+
+
+TOPIC_RESTRICTION_SCHEMA_FIELDS = '''"topic_in_scope": true | false,
+                    "topic_reason": "<short reason, empty string if true>"'''
+
+
+def evaluate_topic_restriction(in_scope: bool, reason: Optional[str], stage: str = "topic_restriction") -> Dict[str, Any]:
+    if not in_scope:
+        reason = reason or msg("topic_restriction.default_reason")
+        logger.warning("Guardrail blocked at %s: %s", stage, reason)
+        return _event(stage, False, reason)
+
+    logger.info("Topic restriction check passed at %s", stage)
+    return _event(stage, True, None)
+
+
+# ---------------------------------------------------------------------------
+# Bias detection guardrail
+#
+# Admin-toggleable (bias_detection_enabled, default on). Only the document
+# pipeline uses this, riding on the answer-generation call: the model
+# self-reports whether its own answer shows unfair characterization,
+# appended to the same JSON response as the answer itself.
+# ---------------------------------------------------------------------------
+
+BIAS_DETECTION_INSTRUCTIONS = """
+                Also decide whether YOUR OWN answer above shows unfair bias: stereotyping,
+                unequal treatment, or characterization based on a protected attribute (gender,
+                race, ethnicity, religion, age, disability, nationality) that isn't directly
+                supported by the context."""
+
+BIAS_DETECTION_SCHEMA_FIELDS = '''"bias_flag": true | false,
+                    "bias_reason": "<short reason, empty string if false>"'''
+
+
+def evaluate_bias_detection(bias_flag: bool, reason: Optional[str], stage: str = "bias_detection") -> Dict[str, Any]:
+    if bias_flag:
+        reason = reason or msg("bias_detection.default_reason")
+        logger.warning("Guardrail blocked at %s: %s", stage, reason)
+        return _event(stage, False, reason)
+
+    logger.info("Bias detection check passed at %s", stage)
     return _event(stage, True, None)
 
 

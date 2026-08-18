@@ -27,6 +27,13 @@ intent_detection:
   low_confidence: "I couldn't confidently tell what you're asking (confidence {confidence:.0%}, need at least {threshold:.0%}) - try rephrasing your question more directly."
   blocked_answer: "I'm sorry, I couldn't confidently tell what you're asking. Could you rephrase your question?"
 
+topic_restriction:
+  default_reason: "This question falls outside the topics this assistant is configured to answer."
+
+bias_detection:
+  default_reason: "Model flagged its own answer as containing unfair or biased characterization."
+  blocked_answer: "I generated a response, but it may contain unfair or biased characterization, so I'm not showing it. Try rephrasing your question."
+
 model_safety:
   blocked_prompt: "Model safety filter blocked the prompt: {block_reason}"
   blocked_categories: "Model safety classifier flagged: {categories}"
@@ -49,6 +56,8 @@ output_validation:
   blocked_answer: "I generated a response, but it didn't pass a content check, so I can't show it. Try rephrasing your question."
   url_stripped: "Removed link(s) to non-allowlisted domain(s): {domains}."
   truncated: "Truncated to {max_length} characters."
+  compliance_keyword: "Generated answer contained a regulated/definitive claim that isn't allowed without review."
+  tone_flagged: "Answer contains informal/unprofessional phrasing: {flags}."
 
 model_output_schema:
   not_json: "Model response was not valid JSON: {error}"

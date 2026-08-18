@@ -131,6 +131,39 @@ def test_project_id_filters_traced_user_conversation_count(client, admin_headers
     assert admin_row(all_users)["conversation_count"] == 3
 
 
+def test_get_trace_turn_by_id_returns_matching_turn(client, admin_headers, user_headers, user_id):
+    _grant(client, admin_headers, user_id, ["guardrail-traces"])
+    conversation = _seed_conversation(user_id, question="what is x", answer="x is y")
+
+    turns = client.get(f"/api/v1/traces/users/{user_id}/turns", headers=user_headers).json()
+    turn_id = turns[0]["id"]
+
+    resp = client.get(f"/api/v1/traces/turns/{turn_id}", headers=user_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["id"] == turn_id
+    assert body["question"] == "what is x"
+    assert body["answer"] == "x is y"
+    assert body["conversation_id"] == conversation["_id"]
+
+
+def test_get_trace_turn_by_id_forbidden_for_another_user(client, admin_headers, user_headers, user_id):
+    _grant(client, admin_headers, user_id, ["guardrail-traces"])
+    other = signup(client, "other-turn-detail@example.com")
+    _seed_conversation(other["user"]["id"])
+
+    other_turns = client.get(f"/api/v1/traces/users/{other['user']['id']}/turns", headers=admin_headers).json()
+    turn_id = other_turns[0]["id"]
+
+    resp = client.get(f"/api/v1/traces/turns/{turn_id}", headers=user_headers)
+    assert resp.status_code == 403
+
+
+def test_get_trace_turn_by_id_404_for_unknown_id(client, admin_headers):
+    resp = client.get("/api/v1/traces/turns/does-not-exist", headers=admin_headers)
+    assert resp.status_code == 404
+
+
 def test_project_id_filters_traced_turns(client, admin_headers, admin_id):
     _seed_conversation(admin_id, question="a document question", project_id="ragchatbot")
     _seed_conversation(admin_id, question="a database question", project_id="database-chatbot")

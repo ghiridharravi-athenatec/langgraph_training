@@ -1,3 +1,4 @@
+import json
 import os
 
 # Must be set before app.core.config (and anything importing it) is first imported.
@@ -82,6 +83,26 @@ def user_id(user_signup):
 @pytest.fixture
 def admin_id(client, admin_headers):
     return client.get("/api/v1/auth/me", headers=admin_headers).json()["id"]
+
+
+def parse_sse_response(resp) -> dict:
+    '''POST /chat and POST /database/chat return a StreamingResponse (see
+    app/core/streaming.py) - a series of SSE "data: {...}" frames - instead of a
+    single JSON body. The final frame ({"type": "done", ...}) already carries the
+    complete response dict (answer, conversation_id, turn_id, logs,
+    graph_response/guardrail_events, response_time_ms), so this just finds and
+    returns that frame, same shape resp.json() used to return before streaming
+    was added. Use in place of resp.json() for those two endpoints only - every
+    other endpoint is still a plain JSON response.'''
+    final = None
+    for line in resp.text.split("\n"):
+        if not line.startswith("data: "):
+            continue
+        payload = json.loads(line[len("data: "):])
+        if payload.get("type") == "done":
+            final = {k: v for k, v in payload.items() if k != "type"}
+    assert final is not None, f"No 'done' frame found in SSE response: {resp.text!r}"
+    return final
 
 
 def seed_document(user_id: str, filename: str = "doc.pdf") -> dict:

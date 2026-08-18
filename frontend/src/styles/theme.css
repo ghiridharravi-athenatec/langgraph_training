@@ -355,7 +355,13 @@ button:disabled {
    dead-center. */
 .auth-page-split {
   justify-content: flex-end;
-  gap: 56px;
+  gap: clamp(24px, 4vw, 56px);
+  /* Fixed to the viewport (not min-height, like the base .auth-page) so this
+     layout never grows past 100vh and forces a page scrollbar - the clamp()s
+     below on its children's gaps/padding shrink them on short viewports so
+     nothing gets clipped by this box's overflow:hidden either. */
+  height: 100vh;
+  padding: clamp(12px, 3vh, 24px);
   overflow: hidden;
 }
 
@@ -379,7 +385,7 @@ button:disabled {
   width: 100%;
   display: flex;
   flex-direction: column;
-  gap: 26px;
+  gap: clamp(12px, 2.2vh, 26px);
 }
 
 .auth-showcase-header {
@@ -476,11 +482,11 @@ button:disabled {
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-md);
-  padding: 20px 22px;
+  padding: clamp(12px, 1.8vh, 20px) 22px;
   display: flex;
   flex-direction: column;
   gap: 12px;
-  min-height: 210px;
+  min-height: clamp(150px, 20vh, 210px);
   transition: opacity 0.5s ease;
 }
 
@@ -587,7 +593,7 @@ button:disabled {
 .auth-steps {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: clamp(8px, 1.4vh, 16px);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -667,7 +673,7 @@ button:disabled {
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-md);
-  padding: 40px 36px;
+  padding: clamp(20px, 3.5vh, 40px) 36px;
   text-align: center;
   animation: fade-scale var(--dur-slow) var(--ease) both;
 }
@@ -707,7 +713,46 @@ button:disabled {
 .auth-subtitle {
   color: var(--text-muted);
   font-size: 13.5px;
-  margin-bottom: 28px;
+  margin-bottom: clamp(14px, 2.5vh, 22px);
+}
+
+.auth-demo-accounts {
+  margin-bottom: clamp(14px, 2.5vh, 22px);
+}
+
+.auth-demo-accounts-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.auth-demo-accounts-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.auth-demo-account-btn {
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--accent-hover);
+  background: var(--accent-soft);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 6px 14px;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+
+.auth-demo-account-btn:hover {
+  border-color: var(--accent);
+  background: #f0d3c2;
 }
 
 .auth-form {
@@ -2028,42 +2073,276 @@ button:disabled {
   max-width: 820px;
 }
 
-.instructions-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin: 12px 0;
-  padding-left: 20px;
+.instructions-tab-switch {
+  display: inline-flex;
+  background: var(--bg-alt);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  padding: 4px;
+  gap: 4px;
+  margin-bottom: 20px;
 }
 
-.instructions-list li {
+.instructions-tab-btn {
+  border: none;
+  background: none;
+  padding: 8px 22px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.instructions-tab-btn:hover {
+  color: var(--text);
+}
+
+.instructions-tab-btn-active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Instructions: architecture pipeline diagram + scenario cards */
+/* ---------------------------------------------------------------------- */
+
+.pipeline-subheading {
+  font-family: var(--font-serif);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 24px 0 4px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.pipeline-subheading:first-of-type {
+  margin-top: 16px;
+  padding-top: 0;
+  border-top: none;
+}
+
+.pipeline-diagram {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: 16px;
+}
+
+.pipeline-node-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+}
+
+.pipeline-node {
+  width: 100%;
+  max-width: 560px;
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  padding: 12px 18px;
+  text-align: center;
+}
+
+.pipeline-node-gate {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.pipeline-node-eyebrow {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent-hover);
+  margin-bottom: 4px;
+}
+
+.pipeline-node-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.pipeline-node-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin-top: 4px;
+}
+
+.pipeline-arrow {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 0;
+}
+
+.pipeline-arrow-line {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+  position: relative;
+}
+
+.pipeline-arrow-line::after {
+  content: "";
+  position: absolute;
+  bottom: -1px;
+  left: 50%;
+  transform: translateX(-50%);
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid var(--border);
+}
+
+.pipeline-arrow-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+  text-align: center;
+  max-width: 320px;
+}
+
+.pipeline-branch-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 24px;
+  width: 100%;
+  max-width: 900px;
+  margin-top: 4px;
+  align-items: start;
+}
+
+.pipeline-branch {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  border: 1px dashed var(--border-soft);
+  border-radius: var(--radius-lg);
+  padding: 16px 12px;
+  height: 100%;
+}
+
+.pipeline-branch-header {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text);
+  margin-bottom: 12px;
+}
+
+.pipeline-branch-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+}
+
+.pipeline-branch-note {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-top: 12px;
+  text-align: center;
+}
+
+.scenario-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.scenario-card {
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  padding: 18px 20px;
+}
+
+.scenario-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.scenario-card-number {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent-hover);
+}
+
+.scenario-card-tag {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--bg-alt);
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+
+.scenario-card-title {
+  font-family: var(--font-serif);
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0 0 10px;
+  color: var(--text);
+}
+
+.scenario-card-question {
+  font-style: italic;
+  color: var(--text);
+  background: var(--bg-alt);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  margin: 0 0 10px;
+  font-size: 13.5px;
+}
+
+.scenario-card-trace {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.scenario-card-trace-line {
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  color: var(--text-muted);
   line-height: 1.5;
 }
 
-.instructions-flow {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin: 4px 0 14px;
+.scenario-card-trace-arrow {
+  color: var(--accent);
 }
 
-.instructions-flow-step {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background: var(--surface-muted, var(--surface));
-  border: 1px solid var(--border-soft);
+.scenario-card-answer {
+  background: var(--accent-soft);
   border-radius: var(--radius-sm);
-  padding: 4px 10px;
-  font-size: 0.85rem;
-  font-weight: 600;
-  white-space: nowrap;
+  padding: 10px 14px;
+  font-size: 13.5px;
+  color: var(--text);
+  margin: 0 0 8px;
 }
 
-.instructions-flow-arrow {
+.scenario-card-note {
+  font-size: 12px;
   color: var(--text-muted);
-  font-weight: 400;
+  margin: 0;
 }
 
 @media (max-width: 860px) {
@@ -2576,12 +2855,15 @@ button:disabled {
 }
 
 .chat-logs-toggle {
+  display: inline-block;
   margin-top: 6px;
+  margin-left: 10px;
   background: none;
   border: none;
   color: var(--text-muted);
   font-size: 12px;
   padding: 0;
+  cursor: pointer;
 }
 
 .chat-logs-toggle:hover {

@@ -19,7 +19,7 @@ import anthropic
 from google import genai
 from google.genai import types as genai_types
 
-from app.core import config, db_connections
+from app.core import config, db_connections, progress
 from app.core.guardrails import extract_token_count
 from app.core.llm_provider import resolve_claude_model
 from app.core.logger import get_logger
@@ -58,16 +58,22 @@ immediately - but don't retry more than once or twice.
 def _tool_specs(engine: str) -> List[Dict[str, Any]]:
     '''Provider-agnostic tool definitions - each provider's loop below translates
     these into its own SDK's tool-schema shape.'''
+    # Schema-qualified names (e.g. "finance.transactions") only ever come back from
+    # list_tables on Postgres/SQL Server connections with more than one user-facing
+    # schema (see db_connections.py's _sql_list_tables) - MongoDB has no schema
+    # concept, and MySQL's connection is already scoped to one database, so neither
+    # gets this caveat in its tool description.
+    schema_note = " Table names may be schema-qualified (e.g. \"finance.transactions\") if the database has more than one schema - always pass the exact name list_tables gave you." if engine != "mongodb" else ""
     specs = [
         {
             "name": "list_tables",
-            "description": "Lists every table (or collection, for MongoDB) in the connected database.",
+            "description": f"Lists every table (or collection, for MongoDB) in the connected database.{schema_note}",
             "properties": {},
             "required": [],
         },
         {
             "name": "describe_table",
-            "description": "Lists the columns/fields of one table or collection.",
+            "description": f"Lists the columns/fields of one table or collection.{schema_note}",
             "properties": {"table_name": {"type": "string", "description": "The table or collection name."}},
             "required": ["table_name"],
         },
@@ -94,6 +100,13 @@ def _tool_specs(engine: str) -> List[Dict[str, Any]]:
             "required": ["sql"],
         })
     return specs
+
+
+_TOOL_PROGRESS_LABELS = {
+    "list_tables": "Inspecting the database…",
+    "describe_table": "Inspecting the database…",
+    "run_query": "Running a query…",
+}
 
 
 def _execute_tool(details: Dict[str, Any], tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, Any]:
@@ -131,6 +144,7 @@ def _claude_tools(engine: str) -> List[Dict[str, Any]]:
 
 def _run_claude_loop(
     question: str, details: Dict[str, Any], model: Optional[str], history: Optional[List[Dict[str, str]]] = None,
+    request_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     if _anthropic_client is None:
         raise RuntimeError("CLAUDE_API_KEY not configured")
@@ -144,7 +158,9 @@ def _run_claude_loop(
     tool_events = []
     token_count = 0
 
-    for _ in range(config.DB_AGENT_MAX_TOOL_CALLS):
+    for iteration in range(config.DB_AGENT_MAX_TOOL_CALLS):
+        if iteration > 0:
+            progress.update(request_id, "Reviewing the results…")
         response = _anthropic_client.messages.create(
             model=resolved_model, max_tokens=1500, system=system, tools=tools, messages=messages,
         )
@@ -165,6 +181,7 @@ def _run_claude_loop(
             if getattr(block, "type", None) != "tool_use":
                 continue
             output = _execute_tool(details, block.name, block.input)
+            progress.update(request_id, _TOOL_PROGRESS_LABELS.get(block.name, "Inspecting the database…"))
             tool_events.append({
                 "stage": "db_agent_tool_call", "tool": block.name, "input": block.input,
                 "passed": "error" not in output, "reason": output.get("error"),
@@ -213,6 +230,7 @@ def _gemini_history(history: Optional[List[Dict[str, str]]]) -> List["genai_type
 
 def _run_gemini_loop(
     question: str, details: Dict[str, Any], history: Optional[List[Dict[str, str]]] = None,
+    request_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     if _gemini_client is None:
         raise RuntimeError("GEMINI_API_KEY not configured")
@@ -245,6 +263,7 @@ def _run_gemini_loop(
         for call in calls:
             tool_input = dict(call.args or {})
             output = _execute_tool(details, call.name, tool_input)
+            progress.update(request_id, _TOOL_PROGRESS_LABELS.get(call.name, "Inspecting the database…"))
             tool_events.append({
                 "stage": "db_agent_tool_call", "tool": call.name, "input": tool_input,
                 "passed": "error" not in output, "reason": output.get("error"),
@@ -253,6 +272,7 @@ def _run_gemini_loop(
                 genai_types.Part.from_function_response(name=call.name, response={"result": json.dumps(output, default=str)})
             )
 
+        progress.update(request_id, "Reviewing the results…")
         response = chat.send_message(function_responses)
         token_count += extract_token_count(response)
 
@@ -271,21 +291,22 @@ def _run_gemini_loop(
 
 def run_db_agent(
     question: str, details: Dict[str, Any], model: Optional[str] = None,
-    history: Optional[List[Dict[str, str]]] = None,
+    history: Optional[List[Dict[str, str]]] = None, request_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     '''`details` is the DECRYPTED connection spec (see db_connections.py) - never
     logged or returned as-is. `history` is prior (question, answer) turns from this
     conversation, same shape as mongo.get_conversation_history() returns - see
-    retrieve.py's identical use of it on the document pipeline. Returns
+    retrieve.py's identical use of it on the document pipeline. `request_id` is
+    optional and purely cosmetic - see app/core/progress.py. Returns
     {"answer", "guardrail_events", "logs", "token_count"}, deliberately shaped like
     the existing /chat response.'''
     try:
-        result = _run_claude_loop(question, details, model, history)
+        result = _run_claude_loop(question, details, model, history, request_id=request_id)
         log = f"Answered using claude ({result['model']})"
     except Exception as e:
         logger.warning("Claude DB agent failed (%s) - falling back to Gemini", e)
         try:
-            result = _run_gemini_loop(question, details, history)
+            result = _run_gemini_loop(question, details, history, request_id=request_id)
             log = f"Claude failed ({e.__class__.__name__}) - fell back to gemini ({result['model']})"
         except Exception as gemini_error:
             logger.exception("Gemini DB agent fallback also failed")
