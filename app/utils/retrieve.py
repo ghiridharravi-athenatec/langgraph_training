@@ -11,20 +11,10 @@ from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
 from dotenv import load_dotenv
 
-from app.core import guardrail_config, llm_provider, progress
+from app.core import llm_provider, progress
 from app.core.logger import get_logger
-from app.core.guardrails import (
-    validate_input,
-    validate_retrieval,
-    validate_output,
-    validate_context_budget,
-    validate_groundedness,
-    validate_json_schema,
-    evaluate_bias_detection,
-    timed_node,
-    BIAS_DETECTION_INSTRUCTIONS,
-    BIAS_DETECTION_SCHEMA_FIELDS,
-)
+from app.core.guardrails import timed_node
+from app.core.guardrails_agent import guardrails_agent
 from app.core.messages import msg
 
 load_dotenv()
@@ -188,7 +178,7 @@ def llm_invoke(prompt: str, model: Optional[str] = None):
     if not safety_event["passed"]:
         return {"answer": "", "guardrail_events": [safety_event], "token_count": result.token_count, "logs": [result.log]}
 
-    schema_event = validate_json_schema(result.text, {"answer": str}, stage="model_output_schema")
+    schema_event = guardrails_agent.check_json_schema(result.text, {"answer": str}, stage="model_output_schema")
     if not schema_event["passed"]:
         return {
             "answer": "",
@@ -202,8 +192,9 @@ def llm_invoke(prompt: str, model: Optional[str] = None):
     # points to would make parsed.guardrail_events[i].parsed a circular self-reference.
     parsed = dict(schema_event["parsed"])
     events = [safety_event, schema_event]
-    if guardrail_config.get_config().get("bias_detection_enabled", True) and "bias_flag" in parsed:
-        events.append(evaluate_bias_detection(bool(parsed.get("bias_flag")), parsed.get("bias_reason")))
+    bias_event = guardrails_agent.interpret_bias_guardrail(parsed)
+    if bias_event is not None:
+        events.append(bias_event)
 
     parsed["guardrail_events"] = events
     parsed["token_count"] = result.token_count
@@ -213,7 +204,7 @@ def llm_invoke(prompt: str, model: Optional[str] = None):
 
 @timed_node("validate_input")
 def validate_input_node(state: RAGState):
-    result = validate_input(state["question"])
+    result = guardrails_agent.check_input(state["question"])
 
     if not result["passed"]:
         return {
@@ -234,7 +225,7 @@ def validate_input_node(state: RAGState):
 
 @timed_node("retrieve")
 def retrieve_node(state: RAGState):
-    progress.update(state.get("request_id"), "Searching your documents…")
+    progress.update(state.get("request_id"), "Document Agent: searching your documents…")
 
     query = state["question"]
     user_id = state["user_id"]
@@ -295,8 +286,8 @@ def retrieve_node(state: RAGState):
 
 @timed_node("validate_retrieval")
 def validate_retrieval_node(state: RAGState):
-    progress.update(state.get("request_id"), "Reviewing relevant passages…")
-    result = validate_retrieval(state["retrieved_chunks"])
+    progress.update(state.get("request_id"), "Guardrails Agent: checking retrieval relevance…")
+    result = guardrails_agent.check_retrieval(state["retrieved_chunks"])
 
     if not result["passed"]:
         return {
@@ -351,7 +342,8 @@ def rerank_node(state: RAGState):
 
 @timed_node("build_context")
 def build_context_node(state: RAGState):
-    budget_event = validate_context_budget(state["retrieved_chunks"])
+    progress.update(state.get("request_id"), "Guardrails Agent: applying context budget…")
+    budget_event = guardrails_agent.apply_context_budget(state["retrieved_chunks"])
     kept_chunks = budget_event.get("kept_chunks") or state["retrieved_chunks"]
 
     context_parts = []
@@ -392,11 +384,9 @@ def _format_history(history: List[Dict[str, str]]) -> str:
 
 @timed_node("answer")
 def answer_node(state: RAGState):
-    progress.update(state.get("request_id"), "Drafting an answer…")
+    progress.update(state.get("request_id"), "Document Agent: drafting an answer…")
     history_block = _format_history(state.get("history") or [])
-    bias_enabled = guardrail_config.get_config().get("bias_detection_enabled", True)
-    bias_instructions = BIAS_DETECTION_INSTRUCTIONS if bias_enabled else ""
-    bias_schema_fields = f",\n                    {BIAS_DETECTION_SCHEMA_FIELDS}" if bias_enabled else ""
+    bias_instructions, bias_schema_fields = guardrails_agent.bias_guardrail_fragments()
     prompt = f"""
                 You are an AI assistant for question answering over technical documents.
 
@@ -447,6 +437,7 @@ def answer_node(state: RAGState):
                 """
 
     response = llm_invoke(prompt, model=state.get("model"))
+    progress.update(state.get("request_id"), "Guardrails Agent: reviewing bias…")
     events = response.get("guardrail_events", [])
     token_count = response.get("token_count", 0)
     provider_logs = response.get("logs", [])
@@ -472,8 +463,8 @@ def answer_node(state: RAGState):
 
 @timed_node("validate_output")
 def validate_output_node(state: RAGState):
-    progress.update(state.get("request_id"), "Double-checking the response…")
-    groundedness_event = validate_groundedness(state["answer"], state["context"], embedding_model)
+    progress.update(state.get("request_id"), "Guardrails Agent: checking groundedness & output…")
+    groundedness_event = guardrails_agent.check_groundedness(state["answer"], state["context"], embedding_model)
     if not groundedness_event["passed"]:
         return {
             "answer": msg("groundedness_check.blocked_answer"),
@@ -481,7 +472,7 @@ def validate_output_node(state: RAGState):
             "logs": [f"[guardrail:groundedness_check] BLOCKED - {groundedness_event['reason']}"],
         }
 
-    result = validate_output(state["answer"])
+    result = guardrails_agent.check_output(state["answer"])
 
     if not result["passed"]:
         return {

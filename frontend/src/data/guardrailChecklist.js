@@ -135,6 +135,16 @@ export const GUARDRAIL_CHECKLIST = [
     resolve: (events) => stageCheck(events, "model_prompt_injection_check"),
   },
   {
+    id: "self_harm_check",
+    label: "Self-harm / crisis content",
+    group: "Model (input)",
+    category: "Input",
+    type: "Model-based",
+    description:
+      "Asks the LLM itself to judge whether the question requests self-harm or suicide methods, ideation, or encouragement - including academically or clinically framed requests - since Gemini's harm categories have no dedicated self-harm bucket and the keyword denylist is easily bypassed by rewording.",
+    resolve: (events) => stageCheck(events, "self_harm_check"),
+  },
+  {
     id: "intent_detection",
     label: "Intent detected",
     group: "Intent",

@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 import api, { formatErrorDetail, streamChat } from "../api/client";
 import DatabaseIngestPanel from "../components/DatabaseIngestPanel";
 import ModelPicker from "../components/ModelPicker";
+import ThemeToggle from "../components/ThemeToggle";
 import ThinkingIndicator from "../components/ThinkingIndicator";
 import ToolCallLog from "../components/ToolCallLog";
 import { TracingTab } from "./Traces";
@@ -18,18 +19,27 @@ const SECTIONS = [
   { id: "tracing", label: "Tracing", icon: "≋" },
 ];
 
+// Fallback cycling text only - shown before the first live stage arrives (or if
+// polling never succeeds at all). Kept in the same order the real pipeline
+// stages actually fire in, so the fallback and the live version read the same.
 const THINKING_MESSAGES = [
-  "Reading your question…",
-  "Inspecting the database…",
-  "Running a query…",
-  "Reviewing the results…",
-  "Drafting an answer…",
+  "Guardrails Agent: validating your question…",
+  "Guardrails Agent: checking your quota…",
+  "Database Agent: inspecting the database…",
+  "Database Agent: running a query…",
+  "Database Agent: reviewing the results…",
+  "Guardrails Agent: checking the answer…",
+];
+
+const SUGGESTED_PROMPTS = [
+  "What tables are available in this database?",
+  "How many rows are in the largest table?",
+  "Show me a sample of the first table",
 ];
 
 export default function DatabaseChatbot() {
   const { user, logout, isAdmin } = useAuth();
 
-  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeSection, setActiveSection] = useState("chat");
 
   const [conversations, setConversations] = useState([]);
@@ -240,20 +250,16 @@ export default function DatabaseChatbot() {
 
   return (
     <div className="chat-shell">
-      <aside className={`chat-nav ${sidebarOpen ? "" : "chat-nav-collapsed"}`}>
+      <div className="chat-nav-spacer" aria-hidden="true" />
+      <aside className="chat-nav">
         <div className="chat-nav-top">
           <Link to="/" className="chat-nav-brand" title="Back to Projects">
             <span className="brand-mark">✦</span>
-            {sidebarOpen && <span>AI Assistance</span>}
+            <span className="chat-nav-label">AI Assistance</span>
           </Link>
-          <button
-            type="button"
-            className="chat-nav-toggle"
-            onClick={() => setSidebarOpen((v) => !v)}
-            title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
-          >
-            {sidebarOpen ? "‹" : "›"}
-          </button>
+          <div className="chat-nav-top-actions">
+            <ThemeToggle />
+          </div>
         </div>
 
         <nav className="chat-nav-list">
@@ -266,15 +272,19 @@ export default function DatabaseChatbot() {
               title={s.label}
             >
               <span className="chat-nav-icon">{s.icon}</span>
-              {sidebarOpen && <span>{s.label}</span>}
+              <span className="chat-nav-label">{s.label}</span>
             </button>
           ))}
         </nav>
 
         <div className="chat-nav-footer">
-          {sidebarOpen && <span className="account-email">{user?.email}</span>}
-          <button className="btn-ghost" onClick={logout} title="Log out">
-            {sidebarOpen ? "Log out" : "⎋"}
+          <div className="chat-nav-account">
+            <span className="chat-nav-avatar">{(user?.email || "?").charAt(0).toUpperCase()}</span>
+            <span className="account-email chat-nav-label">{user?.email}</span>
+          </div>
+          <button className="btn-ghost chat-nav-logout" onClick={logout} title="Log out">
+            <span className="chat-nav-icon">⎋</span>
+            <span className="chat-nav-label">Log out</span>
           </button>
         </div>
       </aside>
@@ -316,24 +326,48 @@ export default function DatabaseChatbot() {
                 <div className="chat-column">
                   {hasConnections === false && (
                     <div className="chat-disclaimer">
-                      You haven't connected a database yet — answers won't have anything to draw on. Connect one
-                      from the <strong>Connections</strong> tab first.
+                      <span className="chat-disclaimer-icon">⛁</span>
+                      <span>
+                        You haven't connected a database yet — answers won't have anything to draw on. Connect one
+                        from the <strong>Connections</strong> tab first.
+                      </span>
                     </div>
                   )}
 
                   {activeConnectionMissing && (
                     <div className="chat-disclaimer">
-                      This conversation's database connection has been removed — you can still read the history
-                      below, but can't ask anything new here. Start a <strong>New chat</strong> and pick an active
-                      connection instead.
+                      <span className="chat-disclaimer-icon">⛁</span>
+                      <span>
+                        This conversation's database connection has been removed — you can still read the history
+                        below, but can't ask anything new here. Start a <strong>New chat</strong> and pick an active
+                        connection instead.
+                      </span>
                     </div>
                   )}
 
                   {messages.length === 0 && (
-                    <div className="chat-empty">
-                      <div className="chat-empty-mark">✦</div>
+                    <div className="chat-welcome chat-welcome-database">
+                      <span className="chat-welcome-eyebrow">Database chat</span>
+                      <div className="chat-welcome-icon">⛁</div>
                       <h2>Ask a question about a connected database</h2>
-                      <p className="muted">Answers come from a live, read-only query against the database you pick below.</p>
+                      <p className="chat-welcome-body">
+                        Answers come from a live, read-only query — the agent inspects your schema, writes a
+                        query, and validates the result before it ever reaches you.
+                      </p>
+                      {hasConnections !== false && !activeConnectionMissing && (
+                        <div className="chat-welcome-prompts">
+                          {SUGGESTED_PROMPTS.map((p) => (
+                            <button
+                              key={p}
+                              type="button"
+                              className="chat-welcome-prompt-chip"
+                              onClick={() => setInput(p)}
+                            >
+                              {p}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
 

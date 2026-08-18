@@ -6,6 +6,7 @@ import api, { formatErrorDetail, streamChat } from "../api/client";
 import GuardrailPanel from "../components/GuardrailPanel";
 import DocumentsPanel from "../components/DocumentsPanel";
 import ModelPicker from "../components/ModelPicker";
+import ThemeToggle from "../components/ThemeToggle";
 import ThinkingIndicator from "../components/ThinkingIndicator";
 import { TracingTab } from "./Traces";
 import { useAuth } from "../context/AuthContext";
@@ -23,17 +24,25 @@ const SECTIONS = [
 // polling never succeeds at all). Kept in the same order the real pipeline
 // stages actually fire in, so the fallback and the live version read the same.
 const THINKING_MESSAGES = [
-  "Reading your question…",
-  "Understanding your question…",
-  "Searching your documents…",
-  "Reviewing relevant passages…",
-  "Drafting an answer…",
-  "Double-checking the response…",
+  "Guardrails Agent: validating your question…",
+  "Guardrails Agent: checking access & quota…",
+  "Document Agent: classifying your question…",
+  "Document Agent: searching your documents…",
+  "Guardrails Agent: checking retrieval relevance…",
+  "Document Agent: drafting an answer…",
+  "Guardrails Agent: reviewing bias…",
+  "Guardrails Agent: checking groundedness & output…",
 ];
 
 // Human-readable labels for the entity type names GET /ingest/pii-options returns -
 // same catalog as PII_ENTITY_OPTIONS on the Guardrails page, kept separate since
 // this component doesn't import from Traces.jsx.
+const SUGGESTED_PROMPTS = [
+  "Summarize what's in this document",
+  "What are the key numbers or figures mentioned?",
+  "List any dates or deadlines referenced",
+];
+
 const PII_ENTITY_LABELS = {
   EMAIL_ADDRESS: "Email address",
   PHONE_NUMBER: "Phone number",
@@ -54,7 +63,6 @@ const PII_ENTITY_LABELS = {
 export default function RagChatbot() {
   const { user, logout, isAdmin } = useAuth();
 
-  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeSection, setActiveSection] = useState("chat");
 
   const [conversations, setConversations] = useState([]);
@@ -282,20 +290,16 @@ export default function RagChatbot() {
 
   return (
     <div className="chat-shell">
-      <aside className={`chat-nav ${sidebarOpen ? "" : "chat-nav-collapsed"}`}>
+      <div className="chat-nav-spacer" aria-hidden="true" />
+      <aside className="chat-nav">
         <div className="chat-nav-top">
           <Link to="/" className="chat-nav-brand" title="Back to Projects">
             <span className="brand-mark">✦</span>
-            {sidebarOpen && <span>AI Assistance</span>}
+            <span className="chat-nav-label">AI Assistance</span>
           </Link>
-          <button
-            type="button"
-            className="chat-nav-toggle"
-            onClick={() => setSidebarOpen((v) => !v)}
-            title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
-          >
-            {sidebarOpen ? "‹" : "›"}
-          </button>
+          <div className="chat-nav-top-actions">
+            <ThemeToggle />
+          </div>
         </div>
 
         <nav className="chat-nav-list">
@@ -308,15 +312,19 @@ export default function RagChatbot() {
               title={s.label}
             >
               <span className="chat-nav-icon">{s.icon}</span>
-              {sidebarOpen && <span>{s.label}</span>}
+              <span className="chat-nav-label">{s.label}</span>
             </button>
           ))}
         </nav>
 
         <div className="chat-nav-footer">
-          {sidebarOpen && <span className="account-email">{user?.email}</span>}
-          <button className="btn-ghost" onClick={logout} title="Log out">
-            {sidebarOpen ? "Log out" : "⎋"}
+          <div className="chat-nav-account">
+            <span className="chat-nav-avatar">{(user?.email || "?").charAt(0).toUpperCase()}</span>
+            <span className="account-email chat-nav-label">{user?.email}</span>
+          </div>
+          <button className="btn-ghost chat-nav-logout" onClick={logout} title="Log out">
+            <span className="chat-nav-icon">⎋</span>
+            <span className="chat-nav-label">Log out</span>
           </button>
         </div>
       </aside>
@@ -358,16 +366,37 @@ export default function RagChatbot() {
                 <div className="chat-column">
                   {hasDocuments === false && (
                     <div className="chat-disclaimer">
-                      You haven't ingested any documents yet — answers won't have anything to draw on. Upload one
-                      from the <strong>Data Ingestion</strong> tab first.
+                      <span className="chat-disclaimer-icon">◧</span>
+                      <span>
+                        You haven't ingested any documents yet — answers won't have anything to draw on. Upload one
+                        from the <strong>Data Ingestion</strong> tab first.
+                      </span>
                     </div>
                   )}
 
                   {messages.length === 0 && (
-                    <div className="chat-empty">
-                      <div className="chat-empty-mark">✦</div>
+                    <div className="chat-welcome chat-welcome-document">
+                      <span className="chat-welcome-eyebrow">Document chat</span>
+                      <div className="chat-welcome-icon">▤</div>
                       <h2>Ask a question about your documents</h2>
-                      <p className="muted">Answers are grounded in the documents you've ingested.</p>
+                      <p className="chat-welcome-body">
+                        Answers are grounded only in what you've ingested — every response runs through PII
+                        masking, relevance, and groundedness checks before it reaches you.
+                      </p>
+                      {hasDocuments !== false && (
+                        <div className="chat-welcome-prompts">
+                          {SUGGESTED_PROMPTS.map((p) => (
+                            <button
+                              key={p}
+                              type="button"
+                              className="chat-welcome-prompt-chip"
+                              onClick={() => setInput(p)}
+                            >
+                              {p}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
 

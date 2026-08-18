@@ -1,14 +1,25 @@
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import ThemeToggle from "./ThemeToggle";
+
+const NAV_LINKS = [
+  { to: "/", label: "Projects", exact: true },
+  { to: "/instructions", label: "Instructions" },
+  { to: "/account", label: "Account" },
+];
 
 export default function AppShell({ children, wide = false }) {
   const { user, isAdmin, logout } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
 
   async function handleLogout() {
     await logout();
     navigate("/login", { replace: true });
+  }
+
+  function isActive(to, exact) {
+    return exact ? location.pathname === to : location.pathname.startsWith(to);
   }
 
   return (
@@ -19,10 +30,16 @@ export default function AppShell({ children, wide = false }) {
           <span>AI Assistance</span>
         </Link>
         <nav className="shell-nav">
-          <Link to="/">Projects</Link>
-          <Link to="/instructions">Instructions</Link>
-          <Link to="/account">Account</Link>
-          {isAdmin && <Link to="/admin/users">Admin</Link>}
+          {NAV_LINKS.map((link) => (
+            <Link key={link.to} to={link.to} className={isActive(link.to, link.exact) ? "shell-nav-active" : ""}>
+              {link.label}
+            </Link>
+          ))}
+          {isAdmin && (
+            <Link to="/admin/users" className={isActive("/admin", false) ? "shell-nav-active" : ""}>
+              Admin
+            </Link>
+          )}
         </nav>
         <div className="shell-account">
           <ThemeToggle />

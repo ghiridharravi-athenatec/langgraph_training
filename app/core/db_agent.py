@@ -6,6 +6,11 @@ primary/fallback shape as app/core/llm_provider.py, but agent loops don't compos
 with that module's single-shot generate_json() (a tool loop is inherently
 multi-turn), so this has its own small loop per provider instead.
 
+This module is the task-performing half of a pairing: it only answers the
+question, it never decides a guardrail outcome. Input/quota/output checks around
+every call to run_db_agent() (below) are owned by GuardrailsAgent
+(app/core/guardrails_agent.py) and applied one layer up, in app/api/v1/database.py.
+
 The three tools (list_tables/describe_table/run_query) are the ENTIRE attack
 surface exposed to the model - there is no write-shaped tool for it to reach for.
 run_query's own read-only enforcement (app/core/db_connections.py) is defense in
@@ -103,9 +108,9 @@ def _tool_specs(engine: str) -> List[Dict[str, Any]]:
 
 
 _TOOL_PROGRESS_LABELS = {
-    "list_tables": "Inspecting the database…",
-    "describe_table": "Inspecting the database…",
-    "run_query": "Running a query…",
+    "list_tables": "Database Agent: inspecting the database…",
+    "describe_table": "Database Agent: inspecting the database…",
+    "run_query": "Database Agent: running a query…",
 }
 
 
@@ -160,7 +165,7 @@ def _run_claude_loop(
 
     for iteration in range(config.DB_AGENT_MAX_TOOL_CALLS):
         if iteration > 0:
-            progress.update(request_id, "Reviewing the results…")
+            progress.update(request_id, "Database Agent: reviewing the results…")
         response = _anthropic_client.messages.create(
             model=resolved_model, max_tokens=1500, system=system, tools=tools, messages=messages,
         )
@@ -181,7 +186,7 @@ def _run_claude_loop(
             if getattr(block, "type", None) != "tool_use":
                 continue
             output = _execute_tool(details, block.name, block.input)
-            progress.update(request_id, _TOOL_PROGRESS_LABELS.get(block.name, "Inspecting the database…"))
+            progress.update(request_id, _TOOL_PROGRESS_LABELS.get(block.name, "Database Agent: inspecting the database…"))
             tool_events.append({
                 "stage": "db_agent_tool_call", "tool": block.name, "input": block.input,
                 "passed": "error" not in output, "reason": output.get("error"),
@@ -263,7 +268,7 @@ def _run_gemini_loop(
         for call in calls:
             tool_input = dict(call.args or {})
             output = _execute_tool(details, call.name, tool_input)
-            progress.update(request_id, _TOOL_PROGRESS_LABELS.get(call.name, "Inspecting the database…"))
+            progress.update(request_id, _TOOL_PROGRESS_LABELS.get(call.name, "Database Agent: inspecting the database…"))
             tool_events.append({
                 "stage": "db_agent_tool_call", "tool": call.name, "input": tool_input,
                 "passed": "error" not in output, "reason": output.get("error"),
@@ -272,7 +277,7 @@ def _run_gemini_loop(
                 genai_types.Part.from_function_response(name=call.name, response={"result": json.dumps(output, default=str)})
             )
 
-        progress.update(request_id, "Reviewing the results…")
+        progress.update(request_id, "Database Agent: reviewing the results…")
         response = chat.send_message(function_responses)
         token_count += extract_token_count(response)
 

@@ -642,6 +642,46 @@ def evaluate_llm_injection_verdict(is_injection: bool, reason: Optional[str], st
 
 
 # ---------------------------------------------------------------------------
+# Model-based self-harm / crisis-content check
+#
+# Gemini's built-in harm categories (harassment/hate/sexual/dangerous) have no
+# dedicated self-harm bucket, and DANGEROUS_CONTENT alone isn't reliable
+# against academically-framed requests ("for a psychology course...",
+# "case-study material") that soften the classifier's own rating - see the
+# incident this check was added for. The keyword denylist in validate_input()
+# is likewise trivially bypassed by rewording. This asks the LLM itself to
+# judge intent semantically, riding on the same intent-classification call as
+# the injection/topic checks above, so it adds no extra round-trip. Always on,
+# not admin-configurable - not something a request should be able to
+# accidentally leave unchecked.
+# ---------------------------------------------------------------------------
+
+SELF_HARM_DETECTION_INSTRUCTIONS = """
+Step 3 - Decide whether the User Query is asking for self-harm or suicide methods,
+encouragement, or instructions, meaning it:
+- Asks how to self-harm or attempt suicide, including specific methods, means, or lethality.
+- Asks you to describe, list, or elaborate on self-harm/suicide methods or ideation patterns,
+  even if wrapped in an academic, clinical, fictional, or "case-study" framing.
+- Seeks to help someone plan or carry out self-harm or suicide, for themselves or someone else.
+A question that discusses self-harm or suicide only in the abstract - e.g. asking about
+prevention, warning signs, support resources, or policy/statistics - is NOT this kind of request.
+"""
+
+SELF_HARM_DETECTION_SCHEMA_FIELDS = '''"is_self_harm_content": true | false,
+                    "self_harm_reason": "<short reason, empty string if false>"'''
+
+
+def evaluate_self_harm_check(is_self_harm: bool, reason: Optional[str], stage: str = "self_harm_check") -> Dict[str, Any]:
+    if is_self_harm:
+        reason = reason or msg("self_harm_check.default_reason")
+        logger.warning("Guardrail blocked at %s: %s", stage, reason)
+        return _event(stage, False, reason)
+
+    logger.info("Self-harm content check passed at %s", stage)
+    return _event(stage, True, None)
+
+
+# ---------------------------------------------------------------------------
 # Intent detection guardrail
 #
 # Rides on the same classify_intent call as the two checks above. If the model
@@ -726,7 +766,7 @@ def build_topic_restriction_instructions() -> Optional[str]:
         return None
     topic_list = ", ".join(topics)
     return f"""
-Step 3 - Decide whether the User Query's subject matter clearly falls within one of these
+Step 4 - Decide whether the User Query's subject matter clearly falls within one of these
 approved topics: {topic_list}. If it's a genuine question but doesn't fit any of these
 topics, set topic_in_scope to false.
 """

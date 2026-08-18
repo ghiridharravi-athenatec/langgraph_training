@@ -5,7 +5,7 @@ import remarkGfm from "remark-gfm";
 import api, { formatErrorDetail } from "../api/client";
 import GuardrailPanel from "../components/GuardrailPanel";
 import ToolCallLog from "../components/ToolCallLog";
-import { groupChecklistByCategory, DATABASE_GUARDRAIL_CHECKLIST } from "../data/guardrailChecklist";
+import { GUARDRAIL_CHECKLIST, DATABASE_GUARDRAIL_CHECKLIST } from "../data/guardrailChecklist";
 import { useAuth } from "../context/AuthContext";
 import { formatResponseTime } from "../utils/formatResponseTime";
 import { formatPiiTokens } from "../utils/formatPii";
@@ -312,33 +312,6 @@ const BIAS_GROUP = {
   ],
 };
 
-// Mirrors the Guardrails catalog's layout: Input -> Retrieval -> Output, each
-// split into its Deterministic (fixed rules/thresholds) and Model-based
-// (Gemini judgment, or an embedding/NER model's score) settings.
-const CONFIG_FIELD_CATEGORIES = [
-  {
-    name: "Input",
-    subgroups: [
-      { name: "Deterministic", groups: [INPUT_LENGTH_GROUP, QUOTA_GROUP] },
-      { name: "Model-based", groups: [INPUT_PII_DETECTION_GROUP, MODEL_SAFETY_GROUP, INTENT_GROUP, TOPIC_RESTRICTION_GROUP] },
-    ],
-  },
-  {
-    name: "Retrieval",
-    subgroups: [
-      { name: "Deterministic", groups: [CONTEXT_BUDGET_GROUP] },
-      { name: "Model-based", groups: [SEMANTIC_CACHE_GROUP, RETRIEVAL_RELEVANCE_GROUP] },
-    ],
-  },
-  {
-    name: "Output",
-    subgroups: [
-      { name: "Deterministic", groups: [OUTPUT_GROUP, COMPLIANCE_GROUP, TONE_GROUP] },
-      { name: "Model-based", groups: [OUTPUT_PII_DETECTION_GROUP, MODEL_SAFETY_GROUP, ANSWER_QUALITY_GROUP, BIAS_GROUP] },
-    ],
-  },
-];
-
 // Display-only relabeling - internal category identifiers ("Input"/"Output")
 // stay as-is everywhere else (guardrailChecklist.js's category field, CSS,
 // etc.), only the on-screen text changes to match the pipeline's actual
@@ -348,6 +321,53 @@ const CATEGORY_LABELS = {
   Retrieval: "Retrieval",
   Output: "Response",
 };
+
+// Maps each catalog check (guardrailChecklist.js, by id) to the live config
+// field(s) that tune it, if any. A check with no entry here has no adjustable
+// threshold - its behavior is fixed in code (e.g. a regex pattern, a schema
+// parse). model_input_validation/model_output_validation intentionally share
+// MODEL_SAFETY_GROUP - one config key governs the same Gemini safety check at
+// both stages. blocked_keywords is likewise shared between the input and
+// output checks that both read it.
+const ITEM_ADJUSTABLE_FIELDS = {
+  "input.length": [INPUT_LENGTH_GROUP.fields[0], INPUT_LENGTH_GROUP.fields[1]],
+  "input.blocked_keywords": [INPUT_LENGTH_GROUP.fields[2]],
+  "input.pii_masking": INPUT_PII_DETECTION_GROUP.fields,
+  quota_check: QUOTA_GROUP.fields,
+  model_input_validation: MODEL_SAFETY_GROUP.fields,
+  intent_detection: INTENT_GROUP.fields,
+  topic_restriction: TOPIC_RESTRICTION_GROUP.fields,
+  semantic_cache: SEMANTIC_CACHE_GROUP.fields,
+  retrieval_validation: RETRIEVAL_RELEVANCE_GROUP.fields,
+  context_budget: CONTEXT_BUDGET_GROUP.fields,
+  model_output_validation: MODEL_SAFETY_GROUP.fields,
+  groundedness_check: ANSWER_QUALITY_GROUP.fields,
+  bias_detection: BIAS_GROUP.fields,
+  "output.blocked_keywords": [INPUT_LENGTH_GROUP.fields[2]],
+  "output.compliance_validation": COMPLIANCE_GROUP.fields,
+  "output.pii_masking": OUTPUT_PII_DETECTION_GROUP.fields,
+  "output.url_allowlist": [OUTPUT_GROUP.fields[0]],
+  "output.length_limit": [OUTPUT_GROUP.fields[1]],
+  "output.tone_check": TONE_GROUP.fields,
+};
+
+// Every catalog check, Input -> Retrieval -> Output, each carrying its
+// adjustable field list (empty for fixed/non-configurable checks).
+const GUARDRAIL_ROWS_BY_CATEGORY = ["Input", "Retrieval", "Output"]
+  .map((category) => ({
+    name: category,
+    items: GUARDRAIL_CHECKLIST.filter((item) => item.category === category).map((item) => ({
+      ...item,
+      fields: ITEM_ADJUSTABLE_FIELDS[item.id] || [],
+    })),
+  }))
+  .filter((cat) => cat.items.length > 0);
+
+const FILTER_TABS = [
+  { id: "all", label: "All" },
+  { id: "adjustable", label: "Adjustable" },
+  { id: "fixed", label: "Fixed" },
+];
 
 function NumberField({ field, value, onChange, disabled }) {
   return (
@@ -491,24 +511,6 @@ function ConfigField({ field, value, onChange, disabled }) {
   }
 }
 
-function AccordionSection({ title, defaultOpen = false, children }) {
-  const [open, setOpen] = useState(defaultOpen);
-  return (
-    <div className="accordion-section">
-      <button
-        type="button"
-        className="accordion-header"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-      >
-        <span>{title}</span>
-        <span className={`accordion-chevron ${open ? "accordion-chevron-open" : ""}`}>⌄</span>
-      </button>
-      {open && <div className="accordion-body-inner animate-in">{children}</div>}
-    </div>
-  );
-}
-
 function UserQuotaEditor({ globalDefault }) {
   const [users, setUsers] = useState([]);
   const [status, setStatus] = useState("loading");
@@ -627,13 +629,13 @@ function UserQuotaEditor({ globalDefault }) {
 
 function GuardrailsTab() {
   const { isAdmin } = useAuth();
-  const catalogGroups = groupChecklistByCategory();
 
   const [config, setConfig] = useState(null);
   const [status, setStatus] = useState("loading");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState(null);
+  const [filterTab, setFilterTab] = useState("all");
 
   useEffect(() => {
     api
@@ -681,14 +683,23 @@ function GuardrailsTab() {
     }
   }
 
+  const visibleCategories = GUARDRAIL_ROWS_BY_CATEGORY.map((category) => ({
+    ...category,
+    items: category.items.filter((item) => {
+      if (filterTab === "adjustable") return item.fields.length > 0;
+      if (filterTab === "fixed") return item.fields.length === 0;
+      return true;
+    }),
+  })).filter((category) => category.items.length > 0);
+
   return (
     <div className="traces-page">
       <div className="traces-page-header">
         <h1>Guardrails</h1>
         <p className="muted">
           {isAdmin
-            ? "Tune the thresholds and lists below, or read the full check-by-check reference underneath."
-            : "Current thresholds, and the full check-by-check reference underneath. Ask an admin to change a value."}
+            ? "Every check in the pipeline. Tune what's adjustable below - the rest is fixed in code."
+            : "Every check in the pipeline, and the thresholds behind it. Ask an admin to change a value."}
         </p>
       </div>
 
@@ -701,32 +712,62 @@ function GuardrailsTab() {
             <p className="gr-readonly-note">You have read-only access to these settings.</p>
           )}
 
-          <div className="traces-guardrail-catalog traces-guardrail-accordion">
-            {CONFIG_FIELD_CATEGORIES.map((category) => (
-              <AccordionSection key={category.name} title={CATEGORY_LABELS[category.name] || category.name}>
-                <div className="gr-config-groups">
-                  {category.subgroups.flatMap((sub) => sub.groups).map((group) => (
-                    <div key={group.name} className="ingest-card gr-config-group">
-                      <h3>{group.name}</h3>
-                      {group.name === "Quota" && isAdmin && (
-                        <UserQuotaEditor globalDefault={config.daily_token_quota} />
-                      )}
-                      {group.fields.map((field) => (
-                        <div key={field.key} className="gr-field">
-                          <span className="field-label">{field.label}</span>
-                          <ConfigField
-                            field={field}
-                            value={config[field.key]}
-                            onChange={(v) => setField(field.key, v)}
-                            disabled={!isAdmin}
-                          />
-                          {field.hint && <span className="gr-field-hint">{field.hint}</span>}
+          <div className="segmented-toggle gr-tab-switch">
+            {FILTER_TABS.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                className={filterTab === tab.id ? "segmented-toggle-active" : ""}
+                onClick={() => setFilterTab(tab.id)}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="traces-guardrail-catalog">
+            {visibleCategories.map((category) => (
+              <div key={category.name} className="gr-category-section">
+                <h3 className="gr-category-heading">{CATEGORY_LABELS[category.name] || category.name}</h3>
+                <div className="gr-row-list">
+                  {category.items.map((item) => (
+                    <div key={item.id} className={`gr-row ${item.fields.length ? "gr-row-adjustable" : "gr-row-fixed"}`}>
+                      <div className="gr-row-header">
+                        <span className="gr-row-name">{item.label}</span>
+                        <span className={`gr-row-badge ${item.fields.length ? "gr-row-badge-adjustable" : "gr-row-badge-fixed"}`}>
+                          {item.fields.length ? "Adjustable" : "Fixed"}
+                        </span>
+                      </div>
+                      <p className="gr-row-desc">{item.description}</p>
+
+                      {item.fields.length > 0 && (
+                        <div className="gr-row-fields">
+                          {item.fields.map((field) => (
+                            <div key={field.key} className="gr-field-row">
+                              <span className="gr-field-row-label">{field.label}</span>
+                              <div className="gr-field-row-control">
+                                <ConfigField
+                                  field={field}
+                                  value={config[field.key]}
+                                  onChange={(v) => setField(field.key, v)}
+                                  disabled={!isAdmin}
+                                />
+                                {field.hint && <span className="gr-field-hint">{field.hint}</span>}
+                              </div>
+                            </div>
+                          ))}
+                          {item.id === "quota_check" && isAdmin && (
+                            <div className="gr-row-quota-override">
+                              <span className="field-label">Per-user override</span>
+                              <UserQuotaEditor globalDefault={config.daily_token_quota} />
+                            </div>
+                          )}
                         </div>
-                      ))}
+                      )}
                     </div>
                   ))}
                 </div>
-              </AccordionSection>
+              </div>
             ))}
           </div>
 
@@ -745,26 +786,6 @@ function GuardrailsTab() {
           )}
         </div>
       )}
-
-      <div className="traces-page-header traces-page-header-secondary">
-        <h2>Full pipeline reference</h2>
-        <p className="muted">Every guardrail check implemented in the RAG pipeline, grouped by the stage it runs at.</p>
-      </div>
-
-      <div className="traces-guardrail-catalog traces-guardrail-accordion">
-        {catalogGroups.map((category) => (
-          <AccordionSection key={category.name} title={CATEGORY_LABELS[category.name] || category.name}>
-            <div className="traces-guardrail-catalog-list">
-              {category.subgroups.flatMap((sub) => sub.items).map((item) => (
-                <div key={item.id} className="traces-guardrail-catalog-item">
-                  <span className="traces-guardrail-catalog-name">{item.label}</span>
-                  <p className="traces-guardrail-catalog-desc">{item.description}</p>
-                </div>
-              ))}
-            </div>
-          </AccordionSection>
-        ))}
-      </div>
     </div>
   );
 }
@@ -929,44 +950,39 @@ function TracingTurnDetail({ user, turn, onBackToUsers, onBackToQuestions }) {
         </p>
       </div>
 
-      <div className="trace-conversation">
-        <div className="trace-turn">
-          <div className="trace-turn-head">
-            <span className="trace-role-label">user</span>
+      <div className="trace-detail">
+        <div className="trace-field">
+          <div className="trace-field-head">
+            <span className="field-label">User prompt</span>
           </div>
-          <div className="chat-message chat-message-user">
-            <div className="chat-bubble">
-              <p>{turn.question}</p>
+          <div className="trace-field-box">{turn.question}</div>
+        </div>
+
+        <div className="trace-field">
+          <div className="trace-field-head">
+            <span className="field-label">Answer</span>
+            {turn.blocked && <span className="guardrail-badge guardrail-badge-warn">Blocked</span>}
+            {turn.cached && <span className="guardrail-badge guardrail-badge-pii">Cached answer</span>}
+          </div>
+          <div className="trace-field-box">
+            <div className="markdown-body">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatPiiTokens(turn.answer)}</ReactMarkdown>
             </div>
           </div>
         </div>
 
-        <div className="trace-turn">
-          <div className="trace-turn-head">
-            <span className="trace-role-label">assistant</span>
-            {turn.blocked && <span className="guardrail-badge guardrail-badge-warn">Blocked</span>}
-            {turn.cached && <span className="guardrail-badge guardrail-badge-pii">Cached answer</span>}
-          </div>
-          <div className="chat-message chat-message-assistant">
-            <div className="chat-bubble">
-              <div className="markdown-body">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{formatPiiTokens(turn.answer)}</ReactMarkdown>
-              </div>
-            </div>
-          </div>
-          {turn.graph_response ? (
-            (turn.logs?.length > 0 || turn.graph_response) && (
-              <GuardrailPanel logs={turn.logs} graphResponse={turn.graph_response} />
-            )
-          ) : (
-            (turn.guardrail_events?.length > 0 || turn.logs?.length > 0) && (
-              <>
-                <GuardrailPanel logs={turn.logs} events={turn.guardrail_events} checklist={DATABASE_GUARDRAIL_CHECKLIST} />
-                <ToolCallLog events={turn.guardrail_events} />
-              </>
-            )
-          )}
-        </div>
+        {turn.graph_response ? (
+          (turn.logs?.length > 0 || turn.graph_response) && (
+            <GuardrailPanel logs={turn.logs} graphResponse={turn.graph_response} />
+          )
+        ) : (
+          (turn.guardrail_events?.length > 0 || turn.logs?.length > 0) && (
+            <>
+              <GuardrailPanel logs={turn.logs} events={turn.guardrail_events} checklist={DATABASE_GUARDRAIL_CHECKLIST} />
+              <ToolCallLog events={turn.guardrail_events} />
+            </>
+          )
+        )}
       </div>
     </div>
   );

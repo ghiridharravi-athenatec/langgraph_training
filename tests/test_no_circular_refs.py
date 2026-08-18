@@ -54,4 +54,5 @@ def test_classify_intent_result_has_no_circular_reference(monkeypatch):
 
     json.dumps(result, default=str)
     assert result["intent"] == "question"
-    assert len(result["guardrail_events"]) == 3
+    # safety, schema, injection, self-harm - topic restriction isn't configured so it's absent
+    assert len(result["guardrail_events"]) == 4
