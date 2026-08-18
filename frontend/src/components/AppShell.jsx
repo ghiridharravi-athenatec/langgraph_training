@@ -1,5 +1,6 @@
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import ThemeToggle from "./ThemeToggle";
 
 export default function AppShell({ children, wide = false }) {
   const { user, isAdmin, logout } = useAuth();
@@ -24,6 +25,7 @@ export default function AppShell({ children, wide = false }) {
           {isAdmin && <Link to="/admin/users">Admin</Link>}
         </nav>
         <div className="shell-account">
+          <ThemeToggle />
           <span className="account-email">{user?.email}</span>
           {isAdmin && <span className="role-badge">admin</span>}
           <button className="btn-ghost" onClick={handleLogout}>

@@ -57,7 +57,9 @@
       "Bash(node *)",
       "WebFetch(domain:www.llmatscale.ai)",
       "Bash(powershell -NoProfile -Command \"Get-CimInstance Win32_Process -Filter 'ProcessId=26128' | Select-Object ProcessId,Name,CommandLine,ExecutablePath | Format-List\" 2>&1)",
-      "WebFetch(domain:rbac-1-two.vercel.app)"
+      "WebFetch(domain:rbac-1-two.vercel.app)",
+      "Bash(pkill -f \"vite --port 5173\")",
+      "Bash(taskkill *)"
     ]
   }
 }
