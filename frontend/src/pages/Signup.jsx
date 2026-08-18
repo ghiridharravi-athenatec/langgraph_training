@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { formatErrorDetail } from "../api/client";
 import { useAuth } from "../context/AuthContext";
 import { isValidEmail } from "../utils/validation";
+import ThemeToggle from "../components/ThemeToggle";
 
 export default function Signup() {
   const { signup } = useAuth();
@@ -34,6 +35,7 @@ export default function Signup() {
 
   return (
     <div className="auth-page">
+      <ThemeToggle floating />
       <div className="auth-card">
         <div className="auth-mark">✦</div>
         <h1 className="auth-title">Create your account</h1>

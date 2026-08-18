@@ -18,11 +18,14 @@
   --danger: #b3432f;
   --danger-soft: #f6e3df;
   --success: #4c7a52;
+  --success-soft-bg: #e5f0e6;
+  --accent-soft-strong: #f0d3c2;
   --sidebar-bg: #ece4d3;
   --sidebar-bg-alt: #ffffff;
   --sidebar-border: #d6cbb5;
   --sidebar-text: #262624;
   --sidebar-muted: #73726c;
+  color-scheme: light;
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 18px;
@@ -37,6 +40,38 @@
   --dur-fast: 0.15s;
   --dur-base: 0.25s;
   --dur-slow: 0.45s;
+}
+
+/* Dark theme - same token names, warm dark palette (not a cold blue-gray) to
+   stay consistent with the clay/cream brand identity in light mode. Toggled
+   via ThemeContext, which sets this attribute on <html> and persists the
+   choice to localStorage (see index.html's inline script for the
+   before-first-paint version that avoids a flash of the wrong theme). */
+:root[data-theme="dark"] {
+  --bg: #1c1a17;
+  --bg-alt: #252220;
+  --surface: #262320;
+  --border: #3a352f;
+  --border-soft: #322e29;
+  --text: #ece7dd;
+  --text-muted: #a49c8d;
+  --accent: #e2896a;
+  --accent-hover: #ec9b7e;
+  --accent-soft: #3d2b22;
+  --danger: #e2685a;
+  --danger-soft: #3a221f;
+  --success: #7cbb82;
+  --success-soft-bg: #1e3324;
+  --accent-soft-strong: #4a3226;
+  --sidebar-bg: #201d19;
+  --sidebar-bg-alt: #262320;
+  --sidebar-border: #3a352f;
+  --sidebar-text: #ece7dd;
+  --sidebar-muted: #a49c8d;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.55);
+  color-scheme: dark;
 }
 
 * {
@@ -212,6 +247,41 @@ select {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* ---------------------------------------------------------------------- */
+/* Theme toggle */
+/* ---------------------------------------------------------------------- */
+
+.theme-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1;
+  padding: 0;
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease),
+    transform var(--dur-fast) var(--ease);
+}
+
+.theme-toggle-btn:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.theme-toggle-floating {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 40;
+  box-shadow: var(--shadow-sm);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -440,7 +510,7 @@ button:disabled {
   font-size: 11px;
   font-weight: 600;
   color: var(--success);
-  background: #e5f0e6;
+  background: var(--success-soft-bg);
   border-radius: 999px;
   padding: 2px 10px 2px 8px;
 }
@@ -581,7 +651,7 @@ button:disabled {
   font-size: 11.5px;
   font-weight: 600;
   color: var(--success);
-  background: #e5f0e6;
+  background: var(--success-soft-bg);
   border-radius: 999px;
   padding: 4px 10px;
 }
@@ -752,7 +822,7 @@ button:disabled {
 
 .auth-demo-account-btn:hover {
   border-color: var(--accent);
-  background: #f0d3c2;
+  background: var(--accent-soft-strong);
 }
 
 .auth-form {
@@ -2950,7 +3020,7 @@ button:disabled {
 }
 
 .guardrail-status-pass {
-  background: #e5f0e6;
+  background: var(--success-soft-bg);
   color: var(--success);
 }
 

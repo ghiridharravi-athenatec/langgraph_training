@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { formatErrorDetail } from "../api/client";
 import { useAuth } from "../context/AuthContext";
 import { isValidEmail } from "../utils/validation";
+import ThemeToggle from "../components/ThemeToggle";
 import pkg from "../../package.json";
 
 const TAGLINES = [
@@ -203,6 +204,7 @@ export default function Login() {
 
   return (
     <div className="auth-page auth-page-split">
+      <ThemeToggle floating />
       <div className="auth-illustration">
         <div className="auth-showcase">
           <div className="auth-showcase-header">

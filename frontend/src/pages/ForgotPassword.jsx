@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import api, { formatErrorDetail } from "../api/client";
+import ThemeToggle from "../components/ThemeToggle";
 
 export default function ForgotPassword() {
   const [email, setEmail] = useState("");
@@ -22,6 +23,7 @@ export default function ForgotPassword() {
 
   return (
     <div className="auth-page">
+      <ThemeToggle floating />
       <div className="auth-card">
         <div className="auth-mark">✦</div>
         <h1 className="auth-title">Reset your password</h1>
