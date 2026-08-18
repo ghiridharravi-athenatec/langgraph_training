@@ -1087,7 +1087,7 @@ export default function TracesProject() {
       <aside className="traces-sidebar">
         <Link to="/" className="traces-brand">
           <span className="brand-mark">✦</span>
-          <span>AI Assistance</span>
+          <span>AI Guardrails</span>
         </Link>
 
         <div className="traces-project-name">
