@@ -271,7 +271,7 @@ const SCENARIOS = [
     n: "02",
     tag: "Output · Model-based",
     title: "PII is masked automatically, on every answer",
-    question: "Who's the account manager for the Acme account, and how do I reach them?",
+    question: "Give me the email address of Ghiridhar?",
     trace: [
       "input validation → passed",
       "retrieval → 3 chunks from your own documents",
@@ -279,7 +279,7 @@ const SCENARIOS = [
       "output validation → PII masked: PERSON, EMAIL_ADDRESS, PHONE_NUMBER",
     ],
     answer:
-      "The account manager for Acme is PII:PERSON, reachable at PII:EMAIL_ADDRESS or PII:PHONE_NUMBER.",
+      "The email address of PII:PERSON is PII:EMAIL_ADDRESS.",
     note:
       "The real value isn't dropped - it's reversibly encrypted into the token, not just redacted. This runs on every answer, not just ones that look sensitive.",
   },
