@@ -501,6 +501,18 @@ const SCENARIOS = [
 ];
 
 function ScenarioCard({ scenario }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(scenario.question);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard API unavailable (e.g. insecure context) - nothing to fall back to.
+    }
+  };
+
   return (
     <div className="scenario-card">
       <div className="scenario-card-head">
@@ -508,7 +520,17 @@ function ScenarioCard({ scenario }) {
         <span className="scenario-card-tag">{scenario.tag}</span>
       </div>
       <h4 className="scenario-card-title">{scenario.title}</h4>
-      <p className="scenario-card-question">“{scenario.question}”</p>
+      <div className="scenario-card-question-row">
+        <p className="scenario-card-question">“{scenario.question}”</p>
+        <button
+          type="button"
+          className={`scenario-card-copy-btn ${copied ? "scenario-card-copy-btn-copied" : ""}`}
+          onClick={handleCopy}
+          aria-label={`Copy question: ${scenario.question}`}
+        >
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
       <div className="scenario-card-trace">
         {scenario.trace.map((line) => (
           <div key={line} className="scenario-card-trace-line">
