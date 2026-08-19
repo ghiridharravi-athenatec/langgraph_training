@@ -5,7 +5,7 @@ import ThemeToggle from "./ThemeToggle";
 const NAV_LINKS = [
   { to: "/", label: "Projects", exact: true },
   { to: "/instructions", label: "Instructions" },
-  { to: "/account", label: "Account" },
+  { to: "/account", label: "Password Reset" },
 ];
 
 export default function AppShell({ children, wide = false }) {
@@ -37,7 +37,7 @@ export default function AppShell({ children, wide = false }) {
           ))}
           {isAdmin && (
             <Link to="/admin/users" className={isActive("/admin", false) ? "shell-nav-active" : ""}>
-              Admin
+              Administrator Control
             </Link>
           )}
         </nav>
