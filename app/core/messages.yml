@@ -5,58 +5,70 @@
 #
 # Every value is a plain Python str.format() template - {placeholders} must
 # match exactly what each call site passes as keyword arguments.
+#
+# Two kinds of string live here for most guardrails: a technical "reason" (used
+# for logs and the Guardrails Observability trace, can stay precise/blunt) and
+# a friendlier "blocked_answer" (what the end user actually sees in the chat,
+# never exposes raw model-judgment text verbatim - see topic_restriction,
+# model_prompt_injection_check, self_harm_check below for the pattern).
 
 common:
-  # Shared wrapper for "a guardrail rejected this, here's why" - used for every
-  # blocked-request answer that has a specific underlying reason to surface.
-  blocked_prefix: "I can't process this: {reason}"
+  # Shared wrapper for "a guardrail rejected this, here's why" - only used for
+  # guardrails whose reason is already a complete, friendly, fixed sentence
+  # (input validation, quota). Guardrails whose reason comes from live model
+  # judgment use their own dedicated blocked_answer instead - see below.
+  blocked_prefix: "{reason}"
 
 input_validation:
-  too_short: "Your question looks empty or too short - add a bit more detail and try again."
-  too_long: "Your question is too long ({max} characters max) - try breaking it into smaller questions."
-  prompt_injection: "This looks like an attempt to override my instructions rather than a genuine question, so I can't process it."
-  blocked_keyword: "This question contains content I'm not able to help with."
+  too_short: "Could you add a bit more detail to your question? It looks a little too short for me to work with."
+  too_long: "That question is a bit long for me to take in at once ({max} characters max) - try splitting it into a couple of smaller questions."
+  prompt_injection: "That reads more like an attempt to change my instructions than a genuine question, so I'm not able to help with it here. Feel free to ask me something about your documents instead."
+  blocked_keyword: "I'm not able to help with that particular request. Let me know if there's something else I can look into for you."
 
 documents_check:
-  no_documents: "You haven't ingested any documents yet - upload one from the Data Ingestion tab before asking a question."
+  no_documents: "Looks like you haven't uploaded any documents yet - head to the Data Ingestion tab to add one, then come back and ask away."
 
 quota_check:
-  exceeded: "You've used your full daily token quota ({used}/{quota}). It resets tomorrow, or ask an admin to raise your limit."
+  exceeded: "You've reached your daily question limit for today ({used}/{quota} tokens used). It resets tomorrow, or an admin can raise your limit if you need more room sooner."
 
 intent_detection:
-  low_confidence: "I couldn't confidently tell what you're asking (confidence {confidence:.0%}, need at least {threshold:.0%}) - try rephrasing your question more directly."
-  blocked_answer: "I'm sorry, I couldn't confidently tell what you're asking. Could you rephrase your question?"
+  low_confidence: "Couldn't confidently tell what's being asked (confidence {confidence:.0%}, need at least {threshold:.0%})."
+  blocked_answer: "I'm sorry, I couldn't quite tell what you're asking - could you rephrase your question a bit more directly?"
 
 topic_restriction:
   default_reason: "This question falls outside the topics this assistant is configured to answer."
+  blocked_answer: "That question falls outside what I'm set up to help with here. Feel free to ask me something within the topics I cover, and I'll do my best to help."
 
 bias_detection:
   default_reason: "Model flagged its own answer as containing unfair or biased characterization."
-  blocked_answer: "I generated a response, but it may contain unfair or biased characterization, so I'm not showing it. Try rephrasing your question."
+  blocked_answer: "I put together a response, but it may not have been fully balanced, so I'd rather not show it as-is. Could you try rephrasing your question?"
 
 model_safety:
   blocked_prompt: "Model safety filter blocked the prompt: {block_reason}"
   blocked_categories: "Model safety classifier flagged: {categories}"
+  blocked_answer: "I'm not able to help with that request - it touches on something I can't engage with here. Feel free to ask me something else."
 
 model_prompt_injection_check:
   default_reason: "Model classified this prompt as a jailbreak/prompt-injection attempt."
+  blocked_answer: "That reads like an attempt to change how I'm supposed to behave rather than a genuine question, so I'm not able to help with it. I'm happy to answer a direct question about your documents instead."
 
 self_harm_check:
   default_reason: "Model classified this prompt as requesting self-harm or suicide-related content."
+  blocked_answer: "I'm not able to help with this request. If you or someone else may be at risk, please reach out to a crisis line or local emergency services - I'm here to help with your documents whenever you're ready."
 
 retrieval_validation:
   no_chunks_at_all: "No relevant documents found for this question."
   no_chunks_above_threshold: "No chunks met the minimum relevance score ({min_score})."
-  blocked_answer: "I couldn't find anything in your documents that's closely related to this question. Try rephrasing it, or confirm the right document has been uploaded."
+  blocked_answer: "The available documents don’t contain closely related information for this question. Try rephrasing your question or check that the relevant document has been uploaded."
 
 groundedness_check:
   not_grounded: "Answer doesn't appear grounded in the retrieved context (similarity {score:.2f} below {min_score:.2f})."
-  blocked_answer: "I found an answer, but couldn't verify it's well-supported by your documents, so I'm not showing it. Try rephrasing your question to be more specific."
+  blocked_answer: "I found a possible answer, but I couldn't fully verify it's well-supported by your documents, so I'd rather not show it. Try rephrasing your question to be a bit more specific."
 
 output_validation:
   empty_answer: "Empty answer generated."
   blocked_keyword: "Generated answer contained disallowed content."
-  blocked_answer: "I generated a response, but it didn't pass a content check, so I can't show it. Try rephrasing your question."
+  blocked_answer: "I put together a response, but it didn't pass a content check, so I'm not able to show it. Try rephrasing your question and I'll give it another go."
   url_stripped: "Removed link(s) to non-allowlisted domain(s): {domains}."
   truncated: "Truncated to {max_length} characters."
   compliance_keyword: "Generated answer contained a regulated/definitive claim that isn't allowed without review."
@@ -67,13 +79,13 @@ model_output_schema:
   not_object: "Model response was valid JSON but not a JSON object."
   missing_fields: "Model response is missing required field(s): {fields}."
   wrong_type: "Model response field(s) have the wrong type: {fields}."
-  blocked_answer: "I'm unable to provide a response to that request. Please try again."
+  blocked_answer: "I wasn't able to put together a proper response to that one - could you try asking again?"
 
 context_budget:
   truncated: "Dropped {dropped} chunk(s) to stay within the ~{max_chars} character context budget."
 
 timeout:
-  blocked_answer: "This request took longer than expected and was stopped. Please try again."
+  blocked_answer: "That took a little longer than expected, so I stopped it. Please try again."
 
 greeting:
   response: "Hello! How can I assist you today? Ask me a question about any of the documents you've uploaded."
@@ -82,15 +94,15 @@ pii:
   skipped: "Skipped - blocked earlier"
 
 ingest:
-  invalid_text_encoding: "This file isn't valid UTF-8 text."
-  unsupported_extension: "Unsupported file extension '{ext}'. Must be one of: {supported}."
-  content_mismatch: "This file's content doesn't match its extension - expected a valid {label} file."
-  too_large: "File is {size_mb:.1f}MB, which exceeds the {max_mb}MB limit."
+  invalid_text_encoding: "This file doesn't look like valid UTF-8 text, so I wasn't able to read it."
+  unsupported_extension: "I can only work with these file types: {supported}. '{ext}' isn't one of them - please try a different file."
+  content_mismatch: "This file's content doesn't quite match a {label} file - please double-check the file and try again."
+  too_large: "This file is {size_mb:.1f}MB, which is over the {max_mb}MB limit - try a smaller file, or split it up."
 
 db_agent:
-  no_answer: "I wasn't able to produce an answer."
-  tool_budget_exceeded: "I wasn't able to finish answering within the allotted number of tool calls - try asking a narrower question."
-  both_providers_failed: "I couldn't reach either language model provider to answer this - please try again shortly."
+  no_answer: "I wasn't able to come up with an answer for that - could you try rephrasing your question?"
+  tool_budget_exceeded: "I wasn't able to finish within the number of steps I'm allowed for one question - try asking a narrower or more specific question."
+  both_providers_failed: "I couldn't reach either language model provider just now - please try again in a moment."
 
 db_query:
   multi_statement: "Only a single statement is allowed per query."

@@ -217,7 +217,7 @@ export const GUARDRAIL_CHECKLIST = [
     category: "Output",
     type: "Model-based",
     description:
-      "Compares the answer's embedding against the retrieved context's embedding; blocks if cosine similarity falls below 0.3, meaning the answer isn't well supported by the retrieved documents.",
+      "Compares the answer's embedding against the retrieved context's embedding; blocks if cosine similarity falls below minimum groundedness score, meaning the answer isn't well supported by the retrieved documents.",
     resolve: (events) => stageCheck(events, "groundedness_check"),
   },
   {

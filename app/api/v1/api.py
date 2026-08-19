@@ -74,6 +74,20 @@ _ingest_rate_limit = rate_limit("ingest", config.INGEST_RATE_LIMIT, config.RATE_
 # cleanly after REQUEST_TIMEOUT_SECONDS", which is the actual guardrail being added.
 _pipeline_executor = concurrent.futures.ThreadPoolExecutor(max_workers=8)
 
+# Model-judged guardrails (riding on the same intent-classification call) produce a
+# free-text "reason" written for logs/the Guardrails Observability trace, not for
+# showing directly to the end user - see messages.yml's module docstring. This maps
+# each stage to its dedicated, friendly blocked_answer instead of splicing that raw
+# judgment text into the chat reply. Any stage not listed here (defensive) falls back
+# to model_safety.blocked_answer.
+_MODEL_GUARDRAIL_BLOCKED_ANSWER_KEYS = {
+    "model_input_validation": "model_safety.blocked_answer",
+    "intent_output_schema": "model_output_schema.blocked_answer",
+    "model_prompt_injection_check": "model_prompt_injection_check.blocked_answer",
+    "self_harm_check": "self_harm_check.blocked_answer",
+    "topic_restriction": "topic_restriction.blocked_answer",
+}
+
 
 async def _run_with_timeout(fn, *args, stage: str, timeout_seconds: int = config.REQUEST_TIMEOUT_SECONDS, **kwargs):
     '''Runs a blocking call on the pipeline thread pool and awaits it - not
@@ -362,9 +376,10 @@ async def _generate_chat_response(state: QAResponse, current_user: dict) -> dict
         blocked_event = next((e for e in model_events if not e["passed"]), None)
         if blocked_event:
             logger.warning("Chat request blocked by model guardrail (%s): %s", blocked_event["stage"], blocked_event["reason"])
+            answer_key = _MODEL_GUARDRAIL_BLOCKED_ANSWER_KEYS.get(blocked_event["stage"], "model_safety.blocked_answer")
             response = {
                 "message": "Request blocked by model safety filter",
-                "answer": msg("common.blocked_prefix", reason=blocked_event["reason"]),
+                "answer": msg(answer_key),
                 "logs": result.get("logs", []) + [f"[guardrail:{blocked_event['stage']}] BLOCKED - {blocked_event['reason']}"],
                 "graph_response": _build_graph_response(state, extra_guardrail_events=guardrail_events),
             }
