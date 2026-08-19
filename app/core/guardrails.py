@@ -327,7 +327,7 @@ def validate_retrieval(chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
     min_relevance_score = cfg["min_relevance_score"]
     filtered = [
         c for c in chunks
-        if c.get("vector_score") is None or c.get("vector_score") >= min_relevance_score
+        if c.get("vector_score") is not None and c.get("vector_score") >= min_relevance_score
     ][:cfg["max_context_chunks"]]
 
     if not filtered:
