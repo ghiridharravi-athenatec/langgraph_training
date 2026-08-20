@@ -6,7 +6,7 @@ PDF_BYTES = b"%PDF-1.4\n%fake pdf content for testing\n%%EOF"
 def test_chat_rate_limit_blocks_after_threshold(client, user_headers, admin_headers, user_id, monkeypatch):
     monkeypatch.setattr(
         "app.api.v1.api.IntentClassifier.classify_intent",
-        lambda self, question, model=None: {"intent": "greetings", "confidence": 0.99, "guardrail_events": []},
+        lambda self, question, model=None, history=None: {"intent": "greetings", "confidence": 0.99, "guardrail_events": []},
     )
     grant = client.put(
         f"/api/v1/admin/users/{user_id}/permissions",
@@ -58,7 +58,7 @@ def test_ingest_rate_limit_blocks_after_threshold(client, admin_headers, monkeyp
 def test_rate_limit_is_per_user(client, user_headers, admin_headers, user_id, monkeypatch):
     monkeypatch.setattr(
         "app.api.v1.api.IntentClassifier.classify_intent",
-        lambda self, question, model=None: {"intent": "greetings", "confidence": 0.99, "guardrail_events": []},
+        lambda self, question, model=None, history=None: {"intent": "greetings", "confidence": 0.99, "guardrail_events": []},
     )
     grant = client.put(
         f"/api/v1/admin/users/{user_id}/permissions",

@@ -5,7 +5,7 @@ import remarkGfm from "remark-gfm";
 import api, { formatErrorDetail } from "../api/client";
 import GuardrailPanel from "../components/GuardrailPanel";
 import ToolCallLog from "../components/ToolCallLog";
-import { GUARDRAIL_CHECKLIST, DATABASE_GUARDRAIL_CHECKLIST } from "../data/guardrailChecklist";
+import { GUARDRAIL_CHECKLIST, DATABASE_GUARDRAIL_CHECKLIST, resolveBlockedGuardrailLabel } from "../data/guardrailChecklist";
 import { useAuth } from "../context/AuthContext";
 import { formatResponseTime } from "../utils/formatResponseTime";
 import { formatPiiTokens } from "../utils/formatPii";
@@ -256,6 +256,24 @@ const RETRIEVAL_RELEVANCE_GROUP = {
   ],
 };
 
+const DOCUMENT_ROUTING_GROUP = {
+  name: "Document routing",
+  fields: [
+    {
+      key: "document_routing_enabled",
+      label: "Enabled",
+      type: "boolean",
+      hint: "Narrows retrieval to the document(s) a question is confidently about, for users with more than one upload. Never blocks - disabled (or unconfident) means search everything, exactly like before this existed.",
+    },
+    {
+      key: "document_routing_min_score",
+      label: "Confidence floor",
+      type: "score",
+      hint: "Fraction of the question's words that must appear in a document for it to be routed to. Below this, every document is searched.",
+    },
+  ],
+};
+
 const CONTEXT_BUDGET_GROUP = {
   name: "Context budget",
   fields: [
@@ -312,6 +330,24 @@ const BIAS_GROUP = {
   ],
 };
 
+const INDIRECT_INJECTION_GROUP = {
+  name: "Indirect context injection",
+  fields: [
+    {
+      key: "indirect_injection_detection_enabled",
+      label: "Enabled",
+      type: "boolean",
+      hint: "A dedicated, small/fast classifier call scores every retrieved chunk for text addressed to the AI assistant before the answering call ever sees them. Doesn't block the turn - flagged chunks are excluded from context and reported in the trace, with a notice appended to the answer.",
+    },
+    {
+      key: "indirect_injection_confidence_threshold",
+      label: "Confidence threshold to exclude",
+      type: "score",
+      hint: "Minimum classifier confidence a flagged chunk must clear to actually be excluded from context.",
+    },
+  ],
+};
+
 // Display-only relabeling - internal category identifiers ("Input"/"Output")
 // stay as-is everywhere else (guardrailChecklist.js's category field, CSS,
 // etc.), only the on-screen text changes to match the pipeline's actual
@@ -337,12 +373,14 @@ const ITEM_ADJUSTABLE_FIELDS = {
   model_input_validation: MODEL_SAFETY_GROUP.fields,
   intent_detection: INTENT_GROUP.fields,
   topic_restriction: TOPIC_RESTRICTION_GROUP.fields,
+  document_routing: DOCUMENT_ROUTING_GROUP.fields,
   semantic_cache: SEMANTIC_CACHE_GROUP.fields,
   retrieval_validation: RETRIEVAL_RELEVANCE_GROUP.fields,
   context_budget: CONTEXT_BUDGET_GROUP.fields,
   model_output_validation: MODEL_SAFETY_GROUP.fields,
   groundedness_check: ANSWER_QUALITY_GROUP.fields,
   bias_detection: BIAS_GROUP.fields,
+  context_injection_filter: INDIRECT_INJECTION_GROUP.fields,
   "output.blocked_keywords": [INPUT_LENGTH_GROUP.fields[2]],
   "output.compliance_validation": COMPLIANCE_GROUP.fields,
   "output.pii_masking": OUTPUT_PII_DETECTION_GROUP.fields,
@@ -961,7 +999,14 @@ function TracingTurnDetail({ user, turn, onBackToUsers, onBackToQuestions }) {
         <div className="trace-field">
           <div className="trace-field-head">
             <span className="field-label">Answer</span>
-            {turn.blocked && <span className="guardrail-badge guardrail-badge-warn">Blocked</span>}
+            {turn.blocked && (
+              <span className="guardrail-badge guardrail-badge-warn">
+                Blocked{(() => {
+                  const label = resolveBlockedGuardrailLabel(turn.graph_response?.guardrail_events || turn.guardrail_events);
+                  return label ? ` - ${label}` : "";
+                })()}
+              </span>
+            )}
             {turn.cached && <span className="guardrail-badge guardrail-badge-pii">Cached answer</span>}
           </div>
           <div className="trace-field-box">

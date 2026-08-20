@@ -10,6 +10,7 @@ from langchain_mongodb import MongoDBAtlasVectorSearch
 from langchain_community.embeddings import HuggingFaceEmbeddings
 import torch
 from app.utils.mongo import DOCUMENT_CHUNKS_COLLECTION, get_mongo_client, create_vector_search_index
+from app.utils.table_chunking import chunk_table_rows
 import io
 from PIL import Image
 from paddleocr import PaddleOCR
@@ -146,25 +147,30 @@ def load_pdf(pdf_path: str) -> List[Document]:
             tables = page.find_tables()
             for table in tables:
                 table_data = table.extract()
-                table_text = "\n".join(
-                    [
-                        " | ".join([str(cell) if cell else "" for cell in row])
-                        for row in table_data
-                    ]
-                )
+                if not table_data:
+                    continue
 
-                if table_text.strip():
-                    docs.append(
-                        Document(
-                            page_content=table_text,
-                            metadata={
-                                "source": os.path.basename(pdf_path),
-                                "page": page_no,
-                                "sheet_name": "",
-                                "content_type": "pdf_table",
-                            },
-                        )
+                formatted_rows = [
+                    " | ".join([str(cell) if cell else "" for cell in row])
+                    for row in table_data
+                ]
+                if not any(row.strip() for row in formatted_rows):
+                    continue
+
+                # First row is the table's header - repeated into every chunk below
+                # (chunk_table_rows) instead of only surviving in the first one.
+                header_lines, row_lines = formatted_rows[:1], formatted_rows[1:]
+                docs.extend(
+                    chunk_table_rows(
+                        header_lines, row_lines,
+                        metadata={
+                            "source": os.path.basename(pdf_path),
+                            "page": page_no,
+                            "sheet_name": "",
+                            "content_type": "pdf_table",
+                        },
                     )
+                )
         except Exception as e:
             logger.exception("Failed to extract tables from page %s of '%s': %s", page_no, pdf_path, e)
 
@@ -176,15 +182,23 @@ def load_pdf(pdf_path: str) -> List[Document]:
 def load_xlsx(xlsx_path: str) -> List[Document]:
     docs = []
     sheets = pd.read_excel(xlsx_path, sheet_name=None)
+    source = os.path.basename(xlsx_path)
 
     for sheet_name, df in sheets.items():
-        text = df.to_markdown(index=False)
+        if df.empty:
+            continue
 
-        docs.append(
-            Document(
-                page_content=text,
+        # to_markdown()'s first two lines are the column-name row and the markdown
+        # separator row (|:---|---:|) - both are the "header" here and get repeated
+        # into every chunk below (chunk_table_rows), not just the first one.
+        lines = df.to_markdown(index=False).split("\n")
+        header_lines, row_lines = (lines[:2], lines[2:]) if len(lines) >= 2 else (lines, [])
+
+        docs.extend(
+            chunk_table_rows(
+                header_lines, row_lines,
                 metadata={
-                    "source": os.path.basename(xlsx_path),
+                    "source": source,
                     "page": 0,
                     "sheet_name": sheet_name,
                     "content_type": "xlsx_table",
@@ -211,14 +225,18 @@ def load_docx(docx_path: str) -> List[Document]:
 
     for table in doc.tables:
         rows = ["\t".join(cell.text for cell in row.cells) for row in table.rows]
-        table_text = "\n".join(rows)
-        if table_text.strip():
-            docs.append(
-                Document(
-                    page_content=table_text,
-                    metadata={"source": source, "page": 0, "sheet_name": "", "content_type": "docx_table"},
-                )
+        if not rows or not any(row.strip() for row in rows):
+            continue
+
+        # First row is the table's header - repeated into every chunk below
+        # (chunk_table_rows) instead of only surviving in the first one.
+        header_lines, row_lines = rows[:1], rows[1:]
+        docs.extend(
+            chunk_table_rows(
+                header_lines, row_lines,
+                metadata={"source": source, "page": 0, "sheet_name": "", "content_type": "docx_table"},
             )
+        )
 
     return docs
 
@@ -245,6 +263,13 @@ _LOADERS = {
     ".txt": load_txt,
 }
 
+# Table-derived documents (from load_xlsx/load_pdf/load_docx) are already
+# chunked row-batch-wise by chunk_table_rows, with the header repeated into
+# every batch - running the generic character-count splitter over them again
+# would cut them again with no table awareness, silently reintroducing the
+# same header-loss problem chunk_table_rows exists to avoid.
+_TABLE_CONTENT_TYPES = {"pdf_table", "xlsx_table", "docx_table"}
+
 
 def ingest_files(file_paths: List[str], user_id: str, pii_entities: List[str] = None):
     try:
@@ -269,7 +294,9 @@ def ingest_files(file_paths: List[str], user_id: str, pii_entities: List[str] = 
             ]
         )
 
-        chunks = splitter.split_documents(all_docs)
+        table_docs = [d for d in all_docs if d.metadata.get("content_type") in _TABLE_CONTENT_TYPES]
+        other_docs = [d for d in all_docs if d.metadata.get("content_type") not in _TABLE_CONTENT_TYPES]
+        chunks = splitter.split_documents(other_docs) + table_docs
 
         # Stamped onto every chunk so retrieval can filter to this uploader's own
         # documents only (see retrieve.py's pre_filter / per-user BM25 cache) - nobody,

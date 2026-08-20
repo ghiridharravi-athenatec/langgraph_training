@@ -32,6 +32,15 @@ function stageCheck(events, stage) {
     cacheHit: event.cache_hit,
     cacheSimilarity: event.similarity,
     matchedQuestion: event.matched_question,
+    routedSources: event.routed_sources,
+    availableSources: event.available_sources,
+    routingConfidence: event.routing_confidence,
+    routingMethod: event.routing_method,
+    nearMissChunks: event.near_miss_chunks,
+    flaggedChunks: event.flagged_chunks,
+    excludedCount: event.excluded_count,
+    checkedCount: event.checked_count,
+    action: event.action,
   };
 }
 
@@ -165,6 +174,26 @@ export const GUARDRAIL_CHECKLIST = [
     resolve: (events) => stageCheck(events, "topic_restriction"),
   },
   {
+    id: "escalation_check",
+    label: "Multi-turn escalation",
+    group: "Model (input)",
+    category: "Input",
+    type: "Model-based",
+    description:
+      "Rides on the same intent-classification call, judging the current message against the recent conversation history for a jailbreak spread innocuously across turns (e.g. asking what the rules are, then which could be relaxed, then asking the assistant to act as if they were) - something no single-message check can catch. Shows as not run on a conversation's first turn, since there's no history yet to escalate from.",
+    resolve: (events) => stageCheck(events, "escalation_check"),
+  },
+  {
+    id: "document_routing",
+    label: "Document routing",
+    group: "Retrieval",
+    category: "Retrieval",
+    type: "Deterministic",
+    description:
+      "When a user has more than one uploaded document, scores each one's relevance to the question (word-overlap against its extracted text) and narrows retrieval to the confident match(es) - a question can route to more than one document. Never blocks: below the confidence floor, disabled, or for a single-document user, it searches the whole corpus exactly as before this check existed.",
+    resolve: (events) => stageCheck(events, "document_routing"),
+  },
+  {
     id: "semantic_cache",
     label: "Similar question cache",
     group: "Cache",
@@ -180,7 +209,7 @@ export const GUARDRAIL_CHECKLIST = [
     group: "Retrieval",
     category: "Retrieval",
     type: "Model-based",
-    description: "Filters retrieved chunks below a 0.5 relevance score and keeps at most the top 8.",
+    description: "Filters retrieved chunks below the admin-configured minimum relevance score and keeps at most the top-N chunks (both tunable below).",
     resolve: (events) => stageCheck(events, "retrieval_validation"),
   },
   {
@@ -229,6 +258,16 @@ export const GUARDRAIL_CHECKLIST = [
     description:
       "Asks the model to self-report whether its own answer shows unfair characterization by a protected attribute, riding on the answer-generation call. Admin-toggleable.",
     resolve: (events) => stageCheck(events, "bias_detection"),
+  },
+  {
+    id: "context_injection_filter",
+    label: "Indirect context injection",
+    group: "Retrieval",
+    category: "Retrieval",
+    type: "Model-based",
+    description:
+      "A dedicated, small/fast classifier call scores every retrieved chunk for text addressed to the AI - an attempt to override its instructions embedded in an uploaded file - before the answering call ever sees them. Flagged chunks are excluded from context outright, not merely instructed against. Doesn't block the turn: the answer is generated from the remaining chunks, with a deterministic notice appended whenever anything was excluded. Admin-toggleable.",
+    resolve: (events) => stageCheck(events, "context_injection_filter"),
   },
   {
     id: "output.not_empty",
@@ -337,4 +376,37 @@ export function groupChecklistByCategory(checklist = GUARDRAIL_CHECKLIST) {
       items: checklist.filter((item) => item.category === category && item.type === type),
     })).filter((sub) => sub.items.length > 0),
   })).filter((cat) => cat.subgroups.length > 0);
+}
+
+// "Which guardrail blocked this turn, by name" - for the chat UI's "Blocked - {name}"
+// badge. input_validation/output_validation aren't 1:1 with a single checklist item
+// (they fan out into input.*/output.* sub-checks via event.checks[]/event.category -
+// see stageCheck/subCheck above), so those two stages need the extra step every other
+// stage doesn't. Falls back to a capitalized stage name rather than nothing, so an
+// unmapped/future stage still shows *something* instead of silently hiding the badge.
+function humanizeStage(stage) {
+  return (stage || "Guardrail").replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// Stages that can report passed: false (something genuinely found/flagged) without
+// blocking the turn - context_injection_filter excludes the flagged chunk(s) and
+// answers from what's left, rather than discarding a good answer (see
+// app/core/guardrails.py's evaluate_injection_filter docstring), so it must never
+// trigger this badge - filter_injected_chunks_node never sets state["blocked"] either.
+const NON_BLOCKING_FAILURE_STAGES = new Set(["context_injection_filter"]);
+
+export function resolveBlockedGuardrailLabel(events) {
+  const failed = (events || []).find((e) => e.passed === false && !NON_BLOCKING_FAILURE_STAGES.has(e.stage));
+  if (!failed) return null;
+
+  let itemId = failed.stage;
+  if (failed.stage === "input_validation") {
+    itemId = failed.category ? `input.${failed.category}` : null;
+  } else if (failed.stage === "output_validation") {
+    const failedCheck = failed.checks?.find((c) => c.passed === false);
+    itemId = failedCheck ? `output.${failedCheck.check}` : null;
+  }
+
+  const item = itemId && GUARDRAIL_CHECKLIST.find((i) => i.id === itemId);
+  return item?.label || humanizeStage(failed.stage);
 }

@@ -20,6 +20,8 @@ requests
 rank-bm25
 pymupdf
 python-docx
+openpyxl
+tabulate
 paddleocr==3.7.0
 paddlepaddle
 presidio-analyzer

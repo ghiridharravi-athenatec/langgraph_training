@@ -79,7 +79,7 @@ def test_chat_request_cleans_up_its_progress_entry_when_done(client, admin_heade
     keeps polling after the answer arrives shouldn't see stale/leftover state.'''
     monkeypatch.setattr(
         "app.api.v1.api.IntentClassifier.classify_intent",
-        lambda self, question, model=None: {"intent": "greetings", "confidence": 0.99, "guardrail_events": []},
+        lambda self, question, model=None, history=None: {"intent": "greetings", "confidence": 0.99, "guardrail_events": []},
     )
     seed_document(admin_id)
     resp = client.post(
