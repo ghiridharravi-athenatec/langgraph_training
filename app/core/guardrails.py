@@ -257,6 +257,19 @@ def summarize_masked_pii(masked_text: str) -> List[Dict[str, Any]]:
     return [{"entity_type": entity_type, "count": count} for entity_type, count in sorted(counts.items())]
 
 
+def simplify_pii_tokens(text: str) -> str:
+    '''Collapses every [[PII:TYPE:token]] marker down to "PII:TYPE" - same transform,
+    same never-decrypts-anything guarantee as summarize_masked_pii, just rewriting the
+    text instead of counting it. Used by app/core/streaming.py so the client (and, over
+    SSE, a character-at-a-time typewriter reveal) never sees the long encrypted token at
+    all - it has no use for it client-side (frontend/src/utils/formatPii.js already never
+    decrypts it, only ever displays the entity type), and streaming it raw meant a
+    partially-arrived token flashed on screen before the closing "]]" completed the
+    match. The persisted Mongo record (written before streaming starts) keeps the full
+    encrypted token untouched - only what actually goes out over the wire is simplified.'''
+    return _ENCODED_PII_RE.sub(lambda m: f"PII:{m.group(1)}", text or "")
+
+
 def validate_input(question: str) -> Dict[str, Any]:
     '''Runs every input sub-check independently (not just up to the first failure) so
     callers can report a full per-check breakdown, not just "why it stopped". PII

@@ -16,16 +16,27 @@ import asyncio
 import json
 from typing import Any, AsyncGenerator, Dict
 
+from app.core.guardrails import simplify_pii_tokens
+
 _CHUNK_SIZE = 5  # characters per SSE delta - small enough to read as a typewriter reveal
 _CHUNK_DELAY_SECONDS = 0.03
 
 
 async def stream_answer(response: Dict[str, Any]) -> AsyncGenerator[str, None]:
-    answer = response.get("answer") or ""
+    # simplify_pii_tokens collapses [[PII:TYPE:token]] down to "PII:TYPE" before
+    # anything is sent - chunking the raw encrypted token character-by-character
+    # would flash the ciphertext on screen for the ~1s it takes to stream in, only
+    # collapsing once the closing "]]" completes the client's regex match. The
+    # already-persisted Mongo record (see api.py - _persist_turn runs before this)
+    # keeps the original response dict, encrypted token and all, untouched.
+    answer = simplify_pii_tokens(response.get("answer") or "")
     for i in range(0, len(answer), _CHUNK_SIZE):
         yield f"data: {json.dumps({'type': 'delta', 'text': answer[i:i + _CHUNK_SIZE]})}\n\n"
         await asyncio.sleep(_CHUNK_DELAY_SECONDS)
     # Everything else the client needs (conversation_id, turn_id, logs,
     # graph_response/guardrail_events, response_time_ms, ...) in one final frame -
     # default=str as a defensive catch-all for anything not natively JSON-safe.
-    yield f"data: {json.dumps({**response, 'type': 'done'}, default=str)}\n\n"
+    # "answer" is overridden with the same simplified text the deltas already
+    # streamed, not response["answer"] - the raw encrypted token has no reason to
+    # ever reach the client, over SSE or otherwise.
+    yield f"data: {json.dumps({**response, 'answer': answer, 'type': 'done'}, default=str)}\n\n"
