@@ -2,6 +2,7 @@ from app.core import guardrail_config
 from app.core.guardrails import (
     _redact_urls,
     evaluate_bias_detection,
+    evaluate_context_injection,
     evaluate_topic_restriction,
     extract_token_count,
     validate_context_budget,
@@ -10,6 +11,7 @@ from app.core.guardrails import (
     validate_output,
     validate_quota,
 )
+from app.core.guardrails_agent import guardrails_agent
 
 
 def test_context_budget_keeps_small_context_untouched():
@@ -166,6 +168,80 @@ def test_evaluate_bias_detection_blocks_flagged_answer():
 def test_evaluate_bias_detection_passes_unflagged_answer():
     event = evaluate_bias_detection(False, None)
     assert event["passed"] is True
+
+
+def test_evaluate_context_injection_flags_without_blocking():
+    '''This check never blocks the turn - see its docstring - so "passed": False here
+    means "genuinely found something" (real signal for the trace), not "block this
+    answer" the way every other guardrail's False does.'''
+    event = evaluate_context_injection(
+        True, "high", "instructs the assistant to reveal its system prompt",
+        "[Source: resume.pdf | Chunk 2 of 5]", "One of the documents contained something odd, so I left it out.",
+    )
+    assert event["passed"] is False
+    assert event["stage"] == "context_injection_check"
+    assert event["reason"] == "instructs the assistant to reveal its system prompt"
+    assert event["injected_source"] == "[Source: resume.pdf | Chunk 2 of 5]"
+    assert event["risk_level"] == "high"
+    assert event["action"] == "excluded"
+    assert event["user_notice"] == "One of the documents contained something odd, so I left it out."
+
+
+def test_evaluate_context_injection_passes_clean_context():
+    event = evaluate_context_injection(False, None, None, None, None)
+    assert event["passed"] is True
+    assert event["injected_source"] is None
+    assert event["risk_level"] == "none"
+    assert event["action"] == "none"
+    assert event["user_notice"] is None
+
+
+def test_evaluate_context_injection_defaults_risk_level_when_flagged_but_ungraded():
+    event = evaluate_context_injection(True, None, "suspicious instruction found", "[Source: a.pdf | Chunk 1 of 1]", None)
+    assert event["risk_level"] == "high"
+
+
+def test_evaluate_context_injection_falls_back_to_default_notice_when_model_omits_one():
+    event = evaluate_context_injection(True, "low", "reason", "[Source: a.pdf | Chunk 1 of 1]", None)
+    assert event["user_notice"]  # non-empty fallback, not None/blank
+
+
+def test_context_injection_fragments_empty_when_disabled():
+    guardrail_config._cache["indirect_injection_detection_enabled"] = False
+    assert guardrails_agent.context_injection_fragments() == ("", "")
+    guardrail_config._cache["indirect_injection_detection_enabled"] = True
+
+
+def test_context_injection_fragments_present_when_enabled():
+    instructions, schema_fields = guardrails_agent.context_injection_fragments()
+    assert "indirect prompt" in instructions.lower()
+    assert "context_injection_flag" in schema_fields
+
+
+def test_interpret_context_injection_none_when_disabled():
+    guardrail_config._cache["indirect_injection_detection_enabled"] = False
+    assert guardrails_agent.interpret_context_injection({"context_injection_flag": True}) is None
+    guardrail_config._cache["indirect_injection_detection_enabled"] = True
+
+
+def test_interpret_context_injection_none_when_field_absent():
+    '''A response from a call that never spliced in the fragments (or a provider that
+    dropped the field) shouldn't be misread as "checked and passed".'''
+    assert guardrails_agent.interpret_context_injection({"answer": "no injection field here"}) is None
+
+
+def test_interpret_context_injection_reads_all_fields():
+    event = guardrails_agent.interpret_context_injection({
+        "context_injection_flag": True,
+        "context_injection_risk_level": "medium",
+        "context_injection_reason": "odd imperative sentence",
+        "context_injection_source": "[Source: notes.txt | Chunk 3 of 3]",
+        "context_injection_notice": "One of the documents had something odd, so I set it aside.",
+    })
+    assert event["passed"] is False
+    assert event["risk_level"] == "medium"
+    assert event["injected_source"] == "[Source: notes.txt | Chunk 3 of 3]"
+    assert event["user_notice"] == "One of the documents had something odd, so I set it aside."
 
 
 def test_output_validation_blocks_compliance_keyword():

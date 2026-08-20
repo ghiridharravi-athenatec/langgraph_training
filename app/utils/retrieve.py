@@ -5,13 +5,13 @@ from langchain_mongodb import MongoDBAtlasVectorSearch
 from pymongo import MongoClient
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from sentence_transformers import CrossEncoder
-import os, operator
+import os, operator, re
 import torch
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
 from dotenv import load_dotenv
 
-from app.core import llm_provider, progress
+from app.core import guardrail_config, llm_provider, progress
 from app.core.logger import get_logger
 from app.core.guardrails import timed_node
 from app.core.guardrails_agent import guardrails_agent
@@ -47,6 +47,12 @@ class RAGState(TypedDict):
     # Prior (question, answer) turns from this conversation, oldest first - see
     # mongo.get_conversation_history. Empty for a conversation's first turn.
     history: List[Dict[str, str]]
+    # Set by route_documents_node - filenames retrieve_node should scope search to,
+    # or empty to search this user's entire corpus (routing disabled, a single- or
+    # zero-document user, or no confident match - see route_documents_node).
+    routed_sources: List[str]
+    routing_confidence: float
+    routing_method: str
     retrieved_chunks: List[Dict[str, Any]]
     reranked_chunks: List[Dict[str, Any]]
     context: str
@@ -66,6 +72,11 @@ _vectorstore = None
 # own chunks means building a separate in-memory index per user rather than one
 # shared index with a query-time filter.
 _bm25_retrievers: Dict[str, Any] = {}
+# Same idea, one level up: BM25 over one pseudo-document per uploaded file (not
+# chunk) - see get_document_bm25_retriever/route_documents_node. Invalidated by the
+# exact same invalidate_bm25_cache() call as _bm25_retrievers, so one ingest event
+# clears both instead of two independently-timed caches.
+_document_bm25_retrievers: Dict[str, Any] = {}
 
 def get_mongo_client():
     global _mongo_client
@@ -91,21 +102,24 @@ def get_vectorstore():
 
 def invalidate_bm25_cache(user_id: str) -> None:
     '''Called after a user ingests a new document so their next chat request rebuilds
-    the BM25 index instead of searching a stale one that predates the upload.'''
+    the BM25 index instead of searching a stale one that predates the upload. Clears
+    both the per-chunk and per-document BM25 caches - a new upload changes both.'''
     _bm25_retrievers.pop(user_id, None)
+    _document_bm25_retrievers.pop(user_id, None)
 
 
-def get_bm25_retriever(user_id: str):
-    if user_id in _bm25_retrievers:
-        return _bm25_retrievers[user_id]
-
+def _build_bm25_retriever(user_id: str, sources: Optional[List[str]]):
     client = get_mongo_client()
     collection = client[DB_NAME][DOCUMENT_CHUNKS_COLLECTION]
+
+    query: Dict[str, Any] = {"user_id": user_id}
+    if sources:
+        query["source"] = {"$in": sources}
 
     docs = []
 
     cursor = collection.find(
-        {"user_id": user_id},
+        query,
         {
             "text": 1,
             "source": 1,
@@ -130,14 +144,87 @@ def get_bm25_retriever(user_id: str):
         )
 
     if not docs:
-        logger.warning("No ingested documents for user %s yet; skipping BM25 retriever.", user_id)
-        _bm25_retrievers[user_id] = None
+        if not sources:
+            logger.warning("No ingested documents for user %s yet; skipping BM25 retriever.", user_id)
         return None
 
     retriever = BM25Retriever.from_documents(docs)
     retriever.k = 10
+    return retriever
 
+
+def get_bm25_retriever(user_id: str, sources: Optional[List[str]] = None):
+    '''sources, if given (route_documents_node narrowed the search to specific
+    file(s)), builds a retriever scoped to just those files' chunks - built fresh
+    every call, not cached, since that corpus is already small and the set of
+    possible source combinations a user could route to is unbounded, unlike the
+    single whole-corpus retriever cached below for the (far more common) unrouted
+    case. Filtering post-hoc after calling the unscoped retriever wouldn't actually
+    scope anything - it already truncated to its own top 10 across the whole corpus
+    before a source filter could apply.'''
+    if sources:
+        return _build_bm25_retriever(user_id, sources)
+
+    if user_id in _bm25_retrievers:
+        return _bm25_retrievers[user_id]
+
+    retriever = _build_bm25_retriever(user_id, None)
     _bm25_retrievers[user_id] = retriever
+
+    return retriever
+
+
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def _tokenize(text: str) -> List[str]:
+    '''BM25Retriever's own default preprocess_func is a bare text.split() - no
+    lowercasing or punctuation stripping, so "policy" (a question token) never
+    matches "policy," (the same word at a sentence boundary in prose). That's
+    tolerable for the existing per-chunk retriever (one signal feeding RRF fusion
+    alongside dense search), but route_documents_node needs a real score to threshold
+    against, so it gets a real tokenizer.'''
+    return _WORD_RE.findall(text.lower())
+
+
+def get_document_bm25_retriever(user_id: str):
+    '''One pseudo-Document per distinct chunk "source" value for this user, built
+    directly from document_chunks (not the documents/upload-catalog collection, and
+    not just one record's worth - concatenates every chunk sharing a source). This
+    deliberately does NOT use app.utils.mongo.list_documents()/`documents.filename`:
+    POST /ingest saves the upload to disk under a generated uuid4-based name (see
+    api.py) and every loader in ingest_files.py stamps chunks' "source" metadata from
+    that saved path's basename, while create_document_record() separately stores the
+    original upload's filename - two different strings for the same file. route_
+    documents_node's routed_sources feeds straight into retrieve_node's Atlas/BM25
+    "source" filters, so routing candidates must be keyed by the SAME value those
+    filters actually match against, or every routed query silently retrieves
+    nothing. Building from document_chunks directly also means this works for every
+    already-ingested document with no migration, unlike keying off a new field on
+    the documents collection would.'''
+    if user_id in _document_bm25_retrievers:
+        return _document_bm25_retrievers[user_id]
+
+    client = get_mongo_client()
+    collection = client[DB_NAME][DOCUMENT_CHUNKS_COLLECTION]
+
+    texts_by_source: Dict[str, List[str]] = {}
+    cursor = collection.find({"user_id": user_id}, {"text": 1, "source": 1})
+    for item in cursor:
+        source = item.get("source", "")
+        texts_by_source.setdefault(source, []).append(item.get("text", ""))
+
+    if not texts_by_source:
+        _document_bm25_retrievers[user_id] = None
+        return None
+
+    docs = [
+        Document(page_content="\n".join(texts), metadata={"source": source})
+        for source, texts in texts_by_source.items()
+    ]
+
+    retriever = BM25Retriever.from_documents(docs, preprocess_func=_tokenize)
+    _document_bm25_retrievers[user_id] = retriever
 
     return retriever
 
@@ -169,6 +256,17 @@ def reciprocal_rank_fusion(result_lists, k=60):
     return [item["doc"] for item in ranked]
 
 
+# Every *blocking* check riding on the answer-generation call (bias, and the
+# safety/schema checks llm_invoke runs first) gets its own blocked_answer text
+# instead of one generic message, same stage->key mapping pattern app/api/v1/api.py
+# already uses for the intent-classification call's checks. Any stage not listed
+# here (defensive) falls back to the generic schema message. context_injection_check
+# is deliberately absent - it never blocks, see its own message handling below.
+_ANSWER_GUARDRAIL_BLOCKED_ANSWER_KEYS = {
+    "bias_detection": "bias_detection.blocked_answer",
+}
+
+
 def llm_invoke(prompt: str, model: Optional[str] = None):
     result = llm_provider.generate_json(prompt, max_tokens=2048, stage="model_output_validation", model=model)
 
@@ -195,6 +293,9 @@ def llm_invoke(prompt: str, model: Optional[str] = None):
     bias_event = guardrails_agent.interpret_bias_guardrail(parsed)
     if bias_event is not None:
         events.append(bias_event)
+    injection_event = guardrails_agent.interpret_context_injection(parsed)
+    if injection_event is not None:
+        events.append(injection_event)
 
     parsed["guardrail_events"] = events
     parsed["token_count"] = result.token_count
@@ -223,23 +324,128 @@ def validate_input_node(state: RAGState):
     }
 
 
+def _routing_event(routed_sources, available_sources, confidence, method, reason=None):
+    '''Same {"stage", "passed", "reason", ...extra} shape every other pipeline/guardrail
+    event uses (see app/core/guardrails.py's _event()) - routing never blocks a turn,
+    so "passed" is always True here; it's a visible, non-blocking signal in the trace,
+    same treatment as context_budget's truncation reporting.'''
+    return {
+        "stage": "document_routing",
+        "passed": True,
+        "reason": reason,
+        "routed_sources": routed_sources,
+        "available_sources": available_sources,
+        "routing_confidence": confidence,
+        "routing_method": method,
+    }
+
+
+@timed_node("route_documents")
+def route_documents_node(state: RAGState):
+    '''Narrows retrieval to the specific uploaded file(s) a question is actually
+    about, when confident - never blocks, never narrows to nothing on its own: an
+    empty routed_sources means retrieve_node searches this user's whole corpus,
+    exactly like before this node existed. Deliberately not a GuardrailsAgent check -
+    routing isn't a security/compliance decision, just a retrieval-precision one.'''
+    progress.update(state.get("request_id"), "Document Agent: figuring out which document(s) to search…")
+    user_id = state["user_id"]
+    question = state["question"]
+    cfg = guardrail_config.get_config()
+
+    if not cfg.get("document_routing_enabled", True):
+        event = _routing_event([], [], 0.0, "disabled", reason="Document routing disabled by admin config.")
+        return {
+            "routed_sources": [],
+            "guardrail_events": [event],
+            "logs": ["[routing] disabled - searching the user's entire corpus"],
+        }
+
+    retriever = get_document_bm25_retriever(user_id)
+    if retriever is None or not retriever.docs:
+        event = _routing_event([], [], 0.0, "no_documents")
+        return {
+            "routed_sources": [],
+            "guardrail_events": [event],
+            "logs": ["[routing] no ingested documents yet - nothing to route"],
+        }
+
+    available_sources = [doc.metadata.get("source", "") for doc in retriever.docs]
+
+    if len(retriever.docs) <= 1:
+        # Nothing to narrow - a source filter would be a costly no-op with only one
+        # document. documents_check (a separate guardrail) handles the zero-document
+        # case before this node ever runs.
+        event = _routing_event([], available_sources, 1.0, "single_document")
+        return {
+            "routed_sources": [],
+            "guardrail_events": [event],
+            "logs": [f"[routing] {len(retriever.docs)} document(s) on file - routing skipped, nothing to narrow"],
+        }
+
+    # Query-token coverage, not BM25Okapi's raw IDF-weighted score: with the small
+    # per-user document counts this app actually has (often just 2-3), BM25's IDF
+    # term degenerates - a word appearing in exactly one of two documents gets
+    # IDF=log(1)=0 (contributes nothing), while a word shared by both goes negative,
+    # so genuinely relevant documents can score negative overall. Coverage - what
+    # fraction of the question's distinct words actually appear in this document -
+    # doesn't have that failure mode and is a more honest confidence signal here.
+    query_tokens = set(retriever.preprocess_func(question))
+    min_score = cfg.get("document_routing_min_score", 0.15)
+    routed = []
+    if query_tokens:
+        for doc in retriever.docs:
+            doc_tokens = set(retriever.preprocess_func(doc.page_content))
+            coverage = len(query_tokens & doc_tokens) / len(query_tokens)
+            if coverage >= min_score:
+                routed.append((doc.metadata.get("source", ""), coverage))
+
+    routed_sources = [source for source, _ in routed]
+    confidence = round(max((score for _, score in routed), default=0.0), 3)
+
+    if routed_sources:
+        event = _routing_event(routed_sources, available_sources, confidence, "lexical")
+        log_line = f"[routing] routed to {routed_sources} (confidence={confidence})"
+    else:
+        event = _routing_event(
+            [], available_sources, 0.0, "unrouted",
+            reason="No document scored a confident match for this question.",
+        )
+        log_line = "[routing] no confident match - searching the user's entire corpus"
+
+    return {
+        "routed_sources": routed_sources,
+        "routing_confidence": confidence,
+        "routing_method": event["routing_method"],
+        "guardrail_events": [event],
+        "logs": [log_line],
+    }
+
+
 @timed_node("retrieve")
 def retrieve_node(state: RAGState):
     progress.update(state.get("request_id"), "Document Agent: searching your documents…")
 
     query = state["question"]
     user_id = state["user_id"]
+    routed_sources = state.get("routed_sources") or []
 
     vectorstore = get_vectorstore()
-    bm25 = get_bm25_retriever(user_id)
+    bm25 = get_bm25_retriever(user_id, sources=routed_sources or None)
 
     # Dense Retrieval - pre_filter scopes the Atlas Vector Search itself to this
     # user's own chunks (requires "user_id" to be a filter field in the search index -
-    # see create_vector_search_index), not just filtered after the fact.
+    # see create_vector_search_index), not just filtered after the fact. When
+    # route_documents_node has routed to specific file(s), "source" (also a declared
+    # filter field) narrows it further - the $in form, never a single $eq, since a
+    # question can legitimately route to more than one document.
+    pre_filter: Dict[str, Any] = {"user_id": {"$eq": user_id}}
+    if routed_sources:
+        pre_filter["source"] = {"$in": routed_sources}
+
     dense_results = vectorstore.similarity_search_with_score(
         query=query,
         k=10,
-        pre_filter={"user_id": {"$eq": user_id}},
+        pre_filter=pre_filter,
     )
 
     dense_docs = []
@@ -248,8 +454,9 @@ def retrieve_node(state: RAGState):
         doc.metadata["vector_score"] = float(score)
         dense_docs.append(doc)
 
-    # Sparse Retrieval - bm25 is already built from only this user's chunks (see
-    # get_bm25_retriever), so no separate filtering needed here.
+    # Sparse Retrieval - bm25 is already scoped to the right chunks (either this
+    # user's whole corpus, or just the routed source(s) - see get_bm25_retriever), so
+    # no separate filtering needed here.
     sparse_docs = bm25.invoke(query) if bm25 is not None else []
 
     # Hybrid Fusion
@@ -343,14 +550,24 @@ def rerank_node(state: RAGState):
 @timed_node("build_context")
 def build_context_node(state: RAGState):
     progress.update(state.get("request_id"), "Guardrails Agent: applying context budget…")
-    budget_event = guardrails_agent.apply_context_budget(state["retrieved_chunks"])
-    kept_chunks = budget_event.get("kept_chunks") or state["retrieved_chunks"]
+    # reranked_chunks is the cross-encoder-reordered/narrowed set (see rerank_node) -
+    # falls back to retrieved_chunks defensively only if reranking is ever skipped.
+    chunks_for_context = state.get("reranked_chunks") or state["retrieved_chunks"]
+    budget_event = guardrails_agent.apply_context_budget(chunks_for_context)
+    kept_chunks = budget_event.get("kept_chunks") or chunks_for_context
 
     context_parts = []
+    total = len(kept_chunks)
 
-    for chunk in kept_chunks:
+    for i, chunk in enumerate(kept_chunks, start=1):
+        # The [Source: ...] label lets the model (and, downstream, an admin reading
+        # the trace) cite exactly which chunk a piece of content came from - notably
+        # used by the indirect-injection guardrail below to report which chunk was
+        # flagged. Always included, not gated by that guardrail's toggle - cheap and
+        # useful attribution regardless.
         context_parts.append(
             f"""
+            [Source: {chunk.get("source", "unknown")} | Chunk {i} of {total}]
             Content:
             {chunk.get("content")}
             """
@@ -387,6 +604,7 @@ def answer_node(state: RAGState):
     progress.update(state.get("request_id"), "Document Agent: drafting an answer…")
     history_block = _format_history(state.get("history") or [])
     bias_instructions, bias_schema_fields = guardrails_agent.bias_guardrail_fragments()
+    injection_instructions, injection_schema_fields = guardrails_agent.context_injection_fragments()
     prompt = f"""
                 You are an AI assistant for question answering over technical documents.
 
@@ -409,6 +627,7 @@ def answer_node(state: RAGState):
                 5. If information exists across multiple chunks, merge them into one complete answer.
                 6. Do not omit any relevant information found in the context.
                 {bias_instructions}
+                {injection_instructions}
 
                 Formatting Rules:
                 - Format the answer to maximize readability.
@@ -421,6 +640,8 @@ def answer_node(state: RAGState):
                 - If the answer is a short definition, return one concise paragraph.
                 - If the answer contains multiple sections, use markdown headings.
                 - Keep line breaks between sections.
+                - Never repeat the [Source: ...] labels shown in the Context into your answer -
+                  they're for internal reference only.
 
                 Context:
                 {state["context"]}
@@ -432,7 +653,7 @@ def answer_node(state: RAGState):
 
                 Schema:
                 {{
-                    "answer": "<formatted markdown answer>"{bias_schema_fields}
+                    "answer": "<formatted markdown answer>"{bias_schema_fields}{injection_schema_fields}
                 }}
                 """
 
@@ -442,10 +663,14 @@ def answer_node(state: RAGState):
     token_count = response.get("token_count", 0)
     provider_logs = response.get("logs", [])
 
-    blocked_event = next((e for e in events if not e["passed"]), None)
+    # context_injection_check deliberately never blocks the turn (see its docstring
+    # in guardrails.py) - it's excluded here so a flagged-but-handled chunk doesn't
+    # discard a perfectly good answer generated from the rest of the context.
+    blocked_event = next((e for e in events if not e["passed"] and e["stage"] != "context_injection_check"), None)
     if blocked_event:
+        answer_key = _ANSWER_GUARDRAIL_BLOCKED_ANSWER_KEYS.get(blocked_event["stage"], "model_output_schema.blocked_answer")
         return {
-            "answer": msg("model_output_schema.blocked_answer"),
+            "answer": msg(answer_key),
             "blocked": True,
             "block_reason": blocked_event["reason"],
             "guardrail_events": events,
@@ -453,11 +678,19 @@ def answer_node(state: RAGState):
             "logs": provider_logs + [f"[guardrail:{blocked_event['stage']}] BLOCKED - {blocked_event['reason']}"],
         }
 
+    # If context_injection_check flagged something, its own model-written notice
+    # (not a static config string - see evaluate_context_injection) is appended to
+    # the real answer, which was itself generated excluding the flagged chunk.
+    injection_event = next((e for e in events if e["stage"] == "context_injection_check" and not e["passed"]), None)
+    answer_text = response.get("answer")
+    if injection_event and injection_event.get("user_notice"):
+        answer_text = f"{answer_text}\n\n{injection_event['user_notice']}"
+
     return {
-        "answer": response.get("answer"),
+        "answer": answer_text,
         "guardrail_events": events,
         "token_count": token_count,
-        "logs": provider_logs + ["Answer generated by LLM"] + [f"[guardrail:{e['stage']}] passed" for e in events],
+        "logs": provider_logs + ["Answer generated by LLM"] + [f"[guardrail:{e['stage']}] {'passed' if e['passed'] else 'flagged'}" for e in events],
     }
 
 
@@ -496,9 +729,10 @@ def build_graph():
     graph = StateGraph(RAGState)
 
     graph.add_node("validate_input", validate_input_node)
+    graph.add_node("route_documents", route_documents_node)
     graph.add_node("retrieve", retrieve_node)
     graph.add_node("validate_retrieval", validate_retrieval_node)
-    # graph.add_node("rerank", rerank_node)
+    graph.add_node("rerank", rerank_node)
     graph.add_node("build_context", build_context_node)
     graph.add_node("answer", answer_node)
     graph.add_node("validate_output", validate_output_node)
@@ -507,15 +741,16 @@ def build_graph():
     graph.add_conditional_edges(
         "validate_input",
         _route_on_blocked,
-        {"blocked": END, "continue": "retrieve"},
+        {"blocked": END, "continue": "route_documents"},
     )
+    graph.add_edge("route_documents", "retrieve")
     graph.add_edge("retrieve", "validate_retrieval")
     graph.add_conditional_edges(
         "validate_retrieval",
         _route_on_blocked,
-        {"blocked": END, "continue": "build_context"},
+        {"blocked": END, "continue": "rerank"},
     )
-    # graph.add_edge("rerank", "build_context")
+    graph.add_edge("rerank", "build_context")
     graph.add_edge("build_context", "answer")
     graph.add_edge("answer", "validate_output")
     graph.add_edge("validate_output", END)

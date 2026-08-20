@@ -38,6 +38,9 @@ class GuardrailConfigOut(BaseModel):
     compliance_keywords: List[str]
     bias_detection_enabled: bool
     tone_calibration_enabled: bool
+    document_routing_enabled: bool
+    document_routing_min_score: float
+    indirect_injection_detection_enabled: bool
 
 
 def _clean_list(values: List[str]) -> List[str]:
@@ -73,6 +76,9 @@ class GuardrailConfigUpdate(BaseModel):
     compliance_keywords: Optional[List[str]] = None
     bias_detection_enabled: Optional[bool] = None
     tone_calibration_enabled: Optional[bool] = None
+    document_routing_enabled: Optional[bool] = None
+    document_routing_min_score: Optional[float] = Field(None, ge=0, le=1)
+    indirect_injection_detection_enabled: Optional[bool] = None
 
     @field_validator("blocked_keywords", "allowed_url_domains", "allowed_topics", "compliance_keywords")
     @classmethod

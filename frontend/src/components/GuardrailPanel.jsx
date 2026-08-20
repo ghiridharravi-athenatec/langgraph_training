@@ -43,18 +43,18 @@ const STATUS_META = {
   not_run: { icon: "–", label: "Not run" },
 };
 
-function GuardrailRow({ item, events }) {
+function GuardrailTableRow({ item, events }) {
   const result = item.resolve(events);
   const meta = STATUS_META[result.status];
   const piiDetected = result.piiDetected || [];
   const flaggedCategories = result.flaggedCategories || [];
 
-  const extraFields = [];
-  if (result.reason) {
-    extraFields.push({ label: "Reason", node: result.reason });
-  }
+  // Every field below except "reason" (its own column) - kept as a flat list of
+  // {label, node} pairs, same as before, so the Details column can render whatever
+  // subset applies to this particular check with consistent inline formatting.
+  const detailFields = [];
   if (piiDetected.length > 0) {
-    extraFields.push({
+    detailFields.push({
       label: "Masked",
       node: piiDetected.map((p) => (
         <span key={p.entity_type} className="guardrail-badge guardrail-badge-pii">
@@ -65,7 +65,7 @@ function GuardrailRow({ item, events }) {
     });
   }
   if (flaggedCategories.length > 0) {
-    extraFields.push({
+    detailFields.push({
       label: "Flagged",
       node: flaggedCategories.map((c) => (
         <span key={c} className="guardrail-badge guardrail-badge-warn">
@@ -75,7 +75,7 @@ function GuardrailRow({ item, events }) {
     });
   }
   if (result.intent !== undefined) {
-    extraFields.push({
+    detailFields.push({
       label: result.status === "pass" ? "Detected" : "Best guess",
       node: (
         <span className={`guardrail-badge ${result.status === "pass" ? "guardrail-badge-pii" : "guardrail-badge-warn"}`}>
@@ -86,7 +86,7 @@ function GuardrailRow({ item, events }) {
     });
   }
   if (typeof result.tokensUsedToday === "number") {
-    extraFields.push({
+    detailFields.push({
       label: "Usage",
       node: (
         <span className="guardrail-badge">
@@ -96,7 +96,7 @@ function GuardrailRow({ item, events }) {
     });
   }
   if (typeof result.groundednessScore === "number") {
-    extraFields.push({
+    detailFields.push({
       label: "Similarity",
       node: (
         <span className={`guardrail-badge ${result.status === "pass" ? "guardrail-badge-pii" : "guardrail-badge-warn"}`}>
@@ -106,7 +106,7 @@ function GuardrailRow({ item, events }) {
     });
   }
   if (typeof result.cacheHit === "boolean") {
-    extraFields.push({
+    detailFields.push({
       label: result.cacheHit ? "Reused" : "Cache",
       node: (
         <span className={`guardrail-badge ${result.cacheHit ? "guardrail-badge-pii" : ""}`}>
@@ -117,28 +117,52 @@ function GuardrailRow({ item, events }) {
       ),
     });
   }
+  if (typeof result.riskLevel === "string") {
+    detailFields.push({
+      label: "Risk level",
+      node: (
+        <span className={`guardrail-badge ${result.riskLevel === "none" || result.riskLevel === "low" ? "" : "guardrail-badge-warn"}`}>
+          {result.riskLevel}
+        </span>
+      ),
+    });
+    if (result.injectedSource) {
+      detailFields.push({ label: "Injected chunk", node: <code className="gr-inline-code">{result.injectedSource}</code> });
+    }
+    if (result.action) {
+      detailFields.push({ label: "Action", node: <span className="guardrail-badge">{result.action}</span> });
+    }
+  }
 
   return (
-    <div className={`gr-row gr-row-status-${result.status}`}>
-      <div className="gr-row-header">
-        <span className="gr-row-name">{item.label}</span>
+    <tr className={`gr-trow gr-trow-status-${result.status}`}>
+      <td className="gr-td gr-td-check">
+        <div className="gr-td-check-name">{item.label}</div>
+        <div className="gr-td-check-desc">{item.description}</div>
+      </td>
+      <td className="gr-td gr-td-status">
         <span className={`gr-row-badge gr-row-badge-${result.status}`}>
           {meta.icon} {meta.label}
         </span>
-      </div>
-      <p className="gr-row-desc">{item.description}</p>
-
-      {extraFields.length > 0 && (
-        <div className="gr-row-fields">
-          {extraFields.map((field, i) => (
-            <div key={i} className="gr-field-row">
-              <span className="gr-field-row-label">{field.label}</span>
-              <div className="gr-field-row-control gr-field-row-control-inline">{field.node}</div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
+      </td>
+      <td className="gr-td gr-td-reason">
+        {result.reason || <span className="gr-td-empty">—</span>}
+      </td>
+      <td className="gr-td gr-td-details">
+        {detailFields.length > 0 ? (
+          <div className="gr-td-details-list">
+            {detailFields.map((field, i) => (
+              <div key={i} className="gr-detail-item">
+                <span className="gr-detail-label">{field.label}:</span>
+                {field.node}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <span className="gr-td-empty">—</span>
+        )}
+      </td>
+    </tr>
   );
 }
 
@@ -159,10 +183,22 @@ export default function GuardrailPanel({ logs, graphResponse, events: eventsProp
         {categories.map((category) => (
           <div key={category.name} className="gr-category-section">
             <h4 className="gr-category-heading">{CATEGORY_LABELS[category.name] || category.name}</h4>
-            <div className="gr-row-list">
-              {category.items.map((item) => (
-                <GuardrailRow key={item.id} item={item} events={events} />
-              ))}
+            <div className="gr-table-wrap">
+              <table className="gr-table">
+                <thead>
+                  <tr>
+                    <th className="gr-th-check">Check</th>
+                    <th className="gr-th-status">Status</th>
+                    <th className="gr-th-reason">Reason</th>
+                    <th className="gr-th-details">Details</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {category.items.map((item) => (
+                    <GuardrailTableRow key={item.id} item={item} events={events} />
+                  ))}
+                </tbody>
+              </table>
             </div>
           </div>
         ))}

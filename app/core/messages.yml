@@ -43,6 +43,14 @@ bias_detection:
   default_reason: "Model flagged its own answer as containing unfair or biased characterization."
   blocked_answer: "I put together a response, but it may not have been fully balanced, so I'd rather not show it as-is. Could you try rephrasing your question?"
 
+context_injection_check:
+  default_reason: "Model flagged the retrieved context as containing an instruction directed at the AI assistant, not ordinary document content."
+  # Fallback only - the model writes its own notice about what it found (see
+  # guardrails.py's INDIRECT_INJECTION_DETECTION_INSTRUCTIONS), appended to the real
+  # answer it still generates from the remaining trustworthy context. This is only
+  # used on the rare chance that field comes back empty.
+  fallback_notice: "One of the documents I searched contained something that looked like an attempt to influence my response, so I disregarded it while answering."
+
 model_safety:
   blocked_prompt: "Model safety filter blocked the prompt: {block_reason}"
   blocked_categories: "Model safety classifier flagged: {categories}"

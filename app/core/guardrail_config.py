@@ -90,6 +90,18 @@ DEFAULTS: Dict[str, Any] = {
     # they ever reached the context.
     "min_relevance_score": 0.35,
     "max_context_chunks": 8,
+    # Not a guardrail (nothing here blocks a turn or protects against misuse) - a
+    # retrieval-quality knob that happens to fit this module's existing live-tunable,
+    # Mongo-backed override plumbing better than standing up a second admin-config
+    # system for two fields. See retrieve.py's route_documents_node. Routing always
+    # falls back to an unfiltered (today's) search below this confidence floor or
+    # when disabled - it can only narrow retrieval, never block it. The score itself
+    # is query-token coverage (fraction of the question's distinct words found in a
+    # given document), not a BM25 relevance score - BM25's IDF weighting degenerates
+    # at the small per-user document counts this app actually has (see
+    # route_documents_node's comment for why).
+    "document_routing_enabled": True,
+    "document_routing_min_score": 0.15,
     "max_context_chars": config.MAX_CONTEXT_CHARS,
     "min_groundedness_score": config.MIN_GROUNDEDNESS_SCORE,
     "allowed_url_domains": list(config.ALLOWED_URL_DOMAINS),
@@ -104,6 +116,10 @@ DEFAULTS: Dict[str, Any] = {
     "compliance_keywords": ["guaranteed returns", "guaranteed profit", "risk-free investment", "guaranteed to cure"],
     "bias_detection_enabled": True,
     "tone_calibration_enabled": True,
+    # Model self-reports whether the retrieved Context (not the answer) contains
+    # indirect prompt injection - riding on the same answer-generation call as bias
+    # detection above. See guardrails.py's INDIRECT_INJECTION_DETECTION_* section.
+    "indirect_injection_detection_enabled": True,
 }
 
 _cache: Dict[str, Any] = dict(DEFAULTS)

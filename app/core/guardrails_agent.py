@@ -132,5 +132,37 @@ class GuardrailsAgent:
             return None
         return guardrails.evaluate_bias_detection(bool(parsed.get("bias_flag")), parsed.get("bias_reason"))
 
+    def context_injection_fragments(self) -> Tuple[str, str]:
+        '''Prompt fragments answer_node splices into its one generation call, if
+        indirect-injection self-reporting on the retrieved context is enabled. Returns
+        ("", "") when disabled, so the caller can splice unconditionally without its
+        own enabled-check - same pattern as bias_guardrail_fragments above.'''
+        from app.core import guardrail_config
+
+        if not guardrail_config.get_config().get("indirect_injection_detection_enabled", True):
+            return "", ""
+        return (
+            guardrails.INDIRECT_INJECTION_DETECTION_INSTRUCTIONS,
+            f",\n                    {guardrails.INDIRECT_INJECTION_DETECTION_SCHEMA_FIELDS}",
+        )
+
+    def interpret_context_injection(self, parsed: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        '''Returns the context-injection event if the check is enabled and the
+        generation response actually included a context_injection_flag field (i.e.
+        context_injection_fragments() was spliced into that same call), else None.'''
+        from app.core import guardrail_config
+
+        if not guardrail_config.get_config().get("indirect_injection_detection_enabled", True):
+            return None
+        if "context_injection_flag" not in parsed:
+            return None
+        return guardrails.evaluate_context_injection(
+            bool(parsed.get("context_injection_flag")),
+            parsed.get("context_injection_risk_level"),
+            parsed.get("context_injection_reason"),
+            parsed.get("context_injection_source"),
+            parsed.get("context_injection_notice"),
+        )
+
 
 guardrails_agent = GuardrailsAgent()

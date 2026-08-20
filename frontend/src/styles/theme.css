@@ -2108,6 +2108,105 @@ button:disabled {
   flex-direction: column;
 }
 
+/* Live per-turn guardrail trace (GuardrailPanel) - a real table, deliberately
+   separate from .gr-row/.gr-row-list above (the admin Guardrails config page's
+   editable-field cards, which need free-form layout for form controls, not a
+   fixed grid) so every check lines up into the same columns regardless of how
+   many detail badges a given check happens to have. */
+.gr-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.gr-table {
+  width: 100%;
+  min-width: 640px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 13px;
+}
+
+.gr-table th {
+  text-align: left;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  background: var(--bg-alt);
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.gr-th-check { width: 24%; }
+.gr-th-status { width: 13%; }
+.gr-th-reason { width: 31%; }
+.gr-th-details { width: 32%; }
+
+.gr-table td {
+  padding: 12px 14px;
+  vertical-align: top;
+  border-bottom: 1px solid var(--border-soft);
+  word-wrap: break-word;
+}
+
+.gr-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.gr-trow-status-fail {
+  background: var(--danger-soft);
+}
+
+.gr-trow-status-skipped,
+.gr-trow-status-not_run {
+  opacity: 0.6;
+}
+
+.gr-td-check-name {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.gr-td-check-desc {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin-top: 3px;
+}
+
+.gr-td-reason {
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.gr-td-empty {
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+
+.gr-td-details-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.gr-detail-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+}
+
+.gr-detail-label {
+  font-weight: 600;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
 @media (max-width: 860px) {
   .traces-sidebar {
     display: none;
@@ -3151,6 +3250,18 @@ button:disabled {
   color: var(--text-muted);
 }
 
+.turn-blocked-badge {
+  display: inline-block;
+  margin-top: 6px;
+  margin-right: 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
 .sidebar-section h3 {
   font-family: var(--font-sans);
   font-size: 12px;
@@ -3675,6 +3786,16 @@ button:disabled {
 .guardrail-badge-warn {
   background: var(--danger-soft);
   color: var(--danger);
+}
+
+.gr-inline-code {
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 11.5px;
+  background: var(--bg-alt);
+  color: var(--text);
+  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+  word-break: break-word;
 }
 
 .chat-raw-logs {

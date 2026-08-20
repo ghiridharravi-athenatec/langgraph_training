@@ -121,8 +121,13 @@ const PIPELINE_DOC_BRANCH = [
     owner: "document",
   },
   {
+    title: "Route to document(s)",
+    desc: "For users with more than one upload, narrows the search to the confidently-relevant document(s) - never blocks; below the confidence floor, disabled, or a single-document user searches everything, same as before this step existed",
+    owner: "document",
+  },
+  {
     title: "Hybrid retrieval",
-    desc: "Dense (Atlas vector search) + BM25, fused by reciprocal rank - scoped to this user's own ingested documents only",
+    desc: "Dense (Atlas vector search) + BM25, fused by reciprocal rank - scoped to this user's own ingested documents, and further scoped to the routed document(s) above when applicable",
     owner: "document",
   },
   {
@@ -130,6 +135,11 @@ const PIPELINE_DOC_BRANCH = [
     desc: "Drops chunks below the relevance-score threshold, keeps at most the top N",
     gate: true,
     owner: "guardrails",
+  },
+  {
+    title: "Rerank",
+    desc: "A cross-encoder re-scores the surviving chunks against the question and keeps the top 5 - a second, more precise pass than the hybrid search's initial ranking",
+    owner: "document",
   },
   {
     title: "Context budget",

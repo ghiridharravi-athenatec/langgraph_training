@@ -12,6 +12,7 @@ import { TracingTab } from "./Traces";
 import { useAuth } from "../context/AuthContext";
 import { formatResponseTime } from "../utils/formatResponseTime";
 import { formatPiiTokens } from "../utils/formatPii";
+import { resolveBlockedGuardrailLabel } from "../data/guardrailChecklist";
 
 const SECTIONS = [
   { id: "chat", label: "Chat", icon: "◧" },
@@ -387,6 +388,10 @@ export default function DatabaseChatbot() {
                           {formatResponseTime(msg.response_time_ms)}
                         </span>
                       )}
+                      {msg.role === "assistant" && (() => {
+                        const blockedLabel = resolveBlockedGuardrailLabel(msg.guardrail_events);
+                        return blockedLabel && <span className="turn-blocked-badge">Blocked - {blockedLabel}</span>;
+                      })()}
                       {isAdmin && msg.role === "assistant" && msg.turn_id && (
                         <button type="button" className="chat-logs-toggle" onClick={() => viewTrace(msg.turn_id)}>
                           View Trace

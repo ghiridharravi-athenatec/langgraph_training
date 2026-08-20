@@ -79,9 +79,22 @@ def test_invalidate_bm25_cache_forces_a_rebuild(monkeypatch):
 
 def test_dense_search_is_prefiltered_by_user_id():
     import inspect
-    sig = inspect.signature(retrieve_module.retrieve_node)
     source = inspect.getsource(retrieve_module.retrieve_node)
-    assert 'pre_filter={"user_id": {"$eq": user_id}}' in source
+    # pre_filter is built as a dict (not an inline literal in the call) so
+    # route_documents_node's routed_sources can conditionally extend it with a
+    # "source" filter - user_id scoping is still unconditional and always present.
+    assert '{"user_id": {"$eq": user_id}}' in source
+    assert "pre_filter=pre_filter" in source
+
+
+def test_dense_search_is_further_scoped_by_routed_sources_when_present():
+    '''route_documents_node narrows retrieval by adding a "source" $in filter, never
+    a bare $eq (a wrong/uncertain single-source pick would otherwise turn into a
+    guaranteed zero-result turn) - same source-inspection approach as the test
+    above, for the same mongomock limitation.'''
+    import inspect
+    source = inspect.getsource(retrieve_module.retrieve_node)
+    assert 'pre_filter["source"] = {"$in": routed_sources}' in source
 
 
 def test_chat_ignores_client_supplied_user_id(client, admin_headers, monkeypatch):
