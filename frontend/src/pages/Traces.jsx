@@ -337,7 +337,13 @@ const INDIRECT_INJECTION_GROUP = {
       key: "indirect_injection_detection_enabled",
       label: "Enabled",
       type: "boolean",
-      hint: "Model self-reports whether the retrieved documents contain text addressed to the AI assistant, riding on the answer-generation call. Doesn't block the turn - answers around the flagged chunk and reports it in the trace.",
+      hint: "A dedicated, small/fast classifier call scores every retrieved chunk for text addressed to the AI assistant before the answering call ever sees them. Doesn't block the turn - flagged chunks are excluded from context and reported in the trace, with a notice appended to the answer.",
+    },
+    {
+      key: "indirect_injection_confidence_threshold",
+      label: "Confidence threshold to exclude",
+      type: "score",
+      hint: "Minimum classifier confidence a flagged chunk must clear to actually be excluded from context.",
     },
   ],
 };
@@ -374,7 +380,7 @@ const ITEM_ADJUSTABLE_FIELDS = {
   model_output_validation: MODEL_SAFETY_GROUP.fields,
   groundedness_check: ANSWER_QUALITY_GROUP.fields,
   bias_detection: BIAS_GROUP.fields,
-  context_injection_check: INDIRECT_INJECTION_GROUP.fields,
+  context_injection_filter: INDIRECT_INJECTION_GROUP.fields,
   "output.blocked_keywords": [INPUT_LENGTH_GROUP.fields[2]],
   "output.compliance_validation": COMPLIANCE_GROUP.fields,
   "output.pii_masking": OUTPUT_PII_DETECTION_GROUP.fields,

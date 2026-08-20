@@ -86,6 +86,7 @@ _MODEL_GUARDRAIL_BLOCKED_ANSWER_KEYS = {
     "model_prompt_injection_check": "model_prompt_injection_check.blocked_answer",
     "self_harm_check": "self_harm_check.blocked_answer",
     "topic_restriction": "topic_restriction.blocked_answer",
+    "escalation_check": "escalation_check.blocked_answer",
 }
 
 
@@ -357,7 +358,7 @@ async def _generate_chat_response(state: QAResponse, current_user: dict) -> dict
         progress.update(state.request_id, "Document Agent: classifying your question…")
         classifier = IntentClassifier()
         result, timeout_event = await _run_with_timeout(
-            classifier.classify_intent, state.question, model=state.model, stage="intent_classification"
+            classifier.classify_intent, state.question, model=state.model, history=history, stage="intent_classification"
         )
         if timeout_event:
             response = {

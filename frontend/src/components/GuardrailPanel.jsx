@@ -117,21 +117,28 @@ function GuardrailTableRow({ item, events }) {
       ),
     });
   }
-  if (typeof result.riskLevel === "string") {
+  if (typeof result.checkedCount === "number") {
     detailFields.push({
-      label: "Risk level",
+      label: "Checked",
       node: (
-        <span className={`guardrail-badge ${result.riskLevel === "none" || result.riskLevel === "low" ? "" : "guardrail-badge-warn"}`}>
-          {result.riskLevel}
+        <span className={`guardrail-badge ${result.excludedCount ? "guardrail-badge-warn" : "guardrail-badge-pii"}`}>
+          {result.excludedCount || 0} of {result.checkedCount} chunk(s) excluded
         </span>
       ),
     });
-    if (result.injectedSource) {
-      detailFields.push({ label: "Injected chunk", node: <code className="gr-inline-code">{result.injectedSource}</code> });
-    }
-    if (result.action) {
-      detailFields.push({ label: "Action", node: <span className="guardrail-badge">{result.action}</span> });
-    }
+  }
+  if (result.flaggedChunks?.length > 0) {
+    detailFields.push({
+      label: "Flagged chunks",
+      node: result.flaggedChunks.map((chunk, i) => (
+        <span key={i} className="guardrail-badge guardrail-badge-warn" title={chunk.reasoning || ""}>
+          <code className="gr-inline-code">{chunk.source}</code> ({Math.round((chunk.confidence || 0) * 100)}%)
+        </span>
+      )),
+    });
+  }
+  if (result.action) {
+    detailFields.push({ label: "Action", node: <span className="guardrail-badge">{result.action}</span> });
   }
 
   return (

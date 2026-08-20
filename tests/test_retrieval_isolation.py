@@ -102,7 +102,7 @@ def test_chat_ignores_client_supplied_user_id(client, admin_headers, monkeypatch
     documents - the server overwrites it from the authenticated session.'''
     monkeypatch.setattr(
         "app.api.v1.api.IntentClassifier.classify_intent",
-        lambda self, question, model=None: {"intent": "question", "confidence": 0.99, "guardrail_events": []},
+        lambda self, question, model=None, history=None: {"intent": "question", "confidence": 0.99, "guardrail_events": []},
     )
     captured_state = {}
 

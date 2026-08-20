@@ -41,6 +41,7 @@ class GuardrailConfigOut(BaseModel):
     document_routing_enabled: bool
     document_routing_min_score: float
     indirect_injection_detection_enabled: bool
+    indirect_injection_confidence_threshold: float
 
 
 def _clean_list(values: List[str]) -> List[str]:
@@ -79,6 +80,7 @@ class GuardrailConfigUpdate(BaseModel):
     document_routing_enabled: Optional[bool] = None
     document_routing_min_score: Optional[float] = Field(None, ge=0, le=1)
     indirect_injection_detection_enabled: Optional[bool] = None
+    indirect_injection_confidence_threshold: Optional[float] = Field(None, ge=0, le=1)
 
     @field_validator("blocked_keywords", "allowed_url_domains", "allowed_topics", "compliance_keywords")
     @classmethod

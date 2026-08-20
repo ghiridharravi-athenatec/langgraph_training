@@ -11,7 +11,7 @@ from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
 from dotenv import load_dotenv
 
-from app.core import guardrail_config, llm_provider, progress
+from app.core import guardrail_config, guardrails, llm_provider, progress
 from app.core.logger import get_logger
 from app.core.guardrails import timed_node
 from app.core.guardrails_agent import guardrails_agent
@@ -260,7 +260,7 @@ def reciprocal_rank_fusion(result_lists, k=60):
 # safety/schema checks llm_invoke runs first) gets its own blocked_answer text
 # instead of one generic message, same stage->key mapping pattern app/api/v1/api.py
 # already uses for the intent-classification call's checks. Any stage not listed
-# here (defensive) falls back to the generic schema message. context_injection_check
+# here (defensive) falls back to the generic schema message. context_injection_filter
 # is deliberately absent - it never blocks, see its own message handling below.
 _ANSWER_GUARDRAIL_BLOCKED_ANSWER_KEYS = {
     "bias_detection": "bias_detection.blocked_answer",
@@ -293,9 +293,6 @@ def llm_invoke(prompt: str, model: Optional[str] = None):
     bias_event = guardrails_agent.interpret_bias_guardrail(parsed)
     if bias_event is not None:
         events.append(bias_event)
-    injection_event = guardrails_agent.interpret_context_injection(parsed)
-    if injection_event is not None:
-        events.append(injection_event)
 
     parsed["guardrail_events"] = events
     parsed["token_count"] = result.token_count
@@ -547,6 +544,28 @@ def rerank_node(state: RAGState):
     }
 
 
+@timed_node("filter_injection")
+def filter_injected_chunks_node(state: RAGState):
+    '''Deterministic pre-filter, runs on the reranked (already narrowed, ~5) set - see
+    guardrails_agent.screen_chunks_for_injection for the actual classifier call.
+    Overwrites reranked_chunks with the filtered result, so build_context_node needs no
+    changes at all: it already reads reranked_chunks first.'''
+    progress.update(state.get("request_id"), "Guardrails Agent: screening documents for injected instructions…")
+    chunks = state.get("reranked_chunks") or []
+    kept_chunks, event = guardrails_agent.screen_chunks_for_injection(chunks)
+
+    logs = [f"[guardrail:context_injection_filter] {'passed' if event['passed'] else 'flagged'}"]
+    if event["excluded_count"]:
+        flagged_sources = [f["source"] for f in event["flagged_chunks"]]
+        logs.append(f"Excluded {event['excluded_count']} of {event['checked_count']} chunk(s): {flagged_sources}")
+
+    return {
+        "reranked_chunks": kept_chunks,
+        "guardrail_events": [event],
+        "logs": logs,
+    }
+
+
 @timed_node("build_context")
 def build_context_node(state: RAGState):
     progress.update(state.get("request_id"), "Guardrails Agent: applying context budget…")
@@ -560,18 +579,12 @@ def build_context_node(state: RAGState):
     total = len(kept_chunks)
 
     for i, chunk in enumerate(kept_chunks, start=1):
-        # The [Source: ...] label lets the model (and, downstream, an admin reading
-        # the trace) cite exactly which chunk a piece of content came from - notably
-        # used by the indirect-injection guardrail below to report which chunk was
-        # flagged. Always included, not gated by that guardrail's toggle - cheap and
-        # useful attribution regardless.
-        context_parts.append(
-            f"""
-            [Source: {chunk.get("source", "unknown")} | Chunk {i} of {total}]
-            Content:
-            {chunk.get("content")}
-            """
-        )
+        # Same [Source: ...] label format guardrails.label_chunk_for_context uses for
+        # filter_injected_chunks_node's classifier prompt - lets the model (and,
+        # downstream, an admin reading the trace) cite exactly which chunk a piece of
+        # content came from. Always included - cheap and useful attribution regardless.
+        label = guardrails.label_chunk_for_context(chunk.get("source", "unknown"), i, total)
+        context_parts.append(f"\n            {label}\n            Content:\n            {chunk.get('content')}\n            ")
 
     context = "\n\n".join(context_parts)
 
@@ -604,7 +617,6 @@ def answer_node(state: RAGState):
     progress.update(state.get("request_id"), "Document Agent: drafting an answer…")
     history_block = _format_history(state.get("history") or [])
     bias_instructions, bias_schema_fields = guardrails_agent.bias_guardrail_fragments()
-    injection_instructions, injection_schema_fields = guardrails_agent.context_injection_fragments()
     prompt = f"""
                 You are an AI assistant for question answering over technical documents.
 
@@ -627,7 +639,6 @@ def answer_node(state: RAGState):
                 5. If information exists across multiple chunks, merge them into one complete answer.
                 6. Do not omit any relevant information found in the context.
                 {bias_instructions}
-                {injection_instructions}
 
                 Formatting Rules:
                 - Format the answer to maximize readability.
@@ -653,7 +664,7 @@ def answer_node(state: RAGState):
 
                 Schema:
                 {{
-                    "answer": "<formatted markdown answer>"{bias_schema_fields}{injection_schema_fields}
+                    "answer": "<formatted markdown answer>"{bias_schema_fields}
                 }}
                 """
 
@@ -663,10 +674,7 @@ def answer_node(state: RAGState):
     token_count = response.get("token_count", 0)
     provider_logs = response.get("logs", [])
 
-    # context_injection_check deliberately never blocks the turn (see its docstring
-    # in guardrails.py) - it's excluded here so a flagged-but-handled chunk doesn't
-    # discard a perfectly good answer generated from the rest of the context.
-    blocked_event = next((e for e in events if not e["passed"] and e["stage"] != "context_injection_check"), None)
+    blocked_event = next((e for e in events if not e["passed"]), None)
     if blocked_event:
         answer_key = _ANSWER_GUARDRAIL_BLOCKED_ANSWER_KEYS.get(blocked_event["stage"], "model_output_schema.blocked_answer")
         return {
@@ -678,13 +686,19 @@ def answer_node(state: RAGState):
             "logs": provider_logs + [f"[guardrail:{blocked_event['stage']}] BLOCKED - {blocked_event['reason']}"],
         }
 
-    # If context_injection_check flagged something, its own model-written notice
-    # (not a static config string - see evaluate_context_injection) is appended to
-    # the real answer, which was itself generated excluding the flagged chunk.
-    injection_event = next((e for e in events if e["stage"] == "context_injection_check" and not e["passed"]), None)
+    # filter_injected_chunks_node ran upstream, before this call was ever made, so its
+    # event is already sitting in state["guardrail_events"] (accumulated via
+    # operator.add), not in this call's own `events`. Appending the deterministic
+    # user_notice here - not asking the answering LLM to mention it - guarantees the
+    # phrase appears whenever a chunk was actually excluded, regardless of what the
+    # model does or doesn't say.
+    injection_event = next(
+        (e for e in state.get("guardrail_events", []) if e["stage"] == "context_injection_filter" and e.get("excluded_count")),
+        None,
+    )
     answer_text = response.get("answer")
-    if injection_event and injection_event.get("user_notice"):
-        answer_text = f"{answer_text}\n\n{injection_event['user_notice']}"
+    if injection_event:
+        answer_text = f"{answer_text}\n\n{msg('context_injection_filter.user_notice', count=injection_event['excluded_count'])}"
 
     return {
         "answer": answer_text,
@@ -733,6 +747,7 @@ def build_graph():
     graph.add_node("retrieve", retrieve_node)
     graph.add_node("validate_retrieval", validate_retrieval_node)
     graph.add_node("rerank", rerank_node)
+    graph.add_node("filter_injection", filter_injected_chunks_node)
     graph.add_node("build_context", build_context_node)
     graph.add_node("answer", answer_node)
     graph.add_node("validate_output", validate_output_node)
@@ -750,7 +765,8 @@ def build_graph():
         _route_on_blocked,
         {"blocked": END, "continue": "rerank"},
     )
-    graph.add_edge("rerank", "build_context")
+    graph.add_edge("rerank", "filter_injection")
+    graph.add_edge("filter_injection", "build_context")
     graph.add_edge("build_context", "answer")
     graph.add_edge("answer", "validate_output")
     graph.add_edge("validate_output", END)

@@ -37,8 +37,9 @@ function stageCheck(events, stage) {
     routingConfidence: event.routing_confidence,
     routingMethod: event.routing_method,
     nearMissChunks: event.near_miss_chunks,
-    injectedSource: event.injected_source,
-    riskLevel: event.risk_level,
+    flaggedChunks: event.flagged_chunks,
+    excludedCount: event.excluded_count,
+    checkedCount: event.checked_count,
     action: event.action,
   };
 }
@@ -173,6 +174,16 @@ export const GUARDRAIL_CHECKLIST = [
     resolve: (events) => stageCheck(events, "topic_restriction"),
   },
   {
+    id: "escalation_check",
+    label: "Multi-turn escalation",
+    group: "Model (input)",
+    category: "Input",
+    type: "Model-based",
+    description:
+      "Rides on the same intent-classification call, judging the current message against the recent conversation history for a jailbreak spread innocuously across turns (e.g. asking what the rules are, then which could be relaxed, then asking the assistant to act as if they were) - something no single-message check can catch. Shows as not run on a conversation's first turn, since there's no history yet to escalate from.",
+    resolve: (events) => stageCheck(events, "escalation_check"),
+  },
+  {
     id: "document_routing",
     label: "Document routing",
     group: "Retrieval",
@@ -249,14 +260,14 @@ export const GUARDRAIL_CHECKLIST = [
     resolve: (events) => stageCheck(events, "bias_detection"),
   },
   {
-    id: "context_injection_check",
+    id: "context_injection_filter",
     label: "Indirect context injection",
-    group: "Answer quality",
-    category: "Output",
+    group: "Retrieval",
+    category: "Retrieval",
     type: "Model-based",
     description:
-      "Asks the model to examine the retrieved documents themselves (not the question) for text addressed to the AI - an attempt to override its instructions embedded in an uploaded file. Riding on the answer-generation call, same as bias detection. Doesn't block the turn: the model answers from the remaining trustworthy chunks and writes its own plain-language notice about what it found, appended to the answer. Admin-toggleable.",
-    resolve: (events) => stageCheck(events, "context_injection_check"),
+      "A dedicated, small/fast classifier call scores every retrieved chunk for text addressed to the AI - an attempt to override its instructions embedded in an uploaded file - before the answering call ever sees them. Flagged chunks are excluded from context outright, not merely instructed against. Doesn't block the turn: the answer is generated from the remaining chunks, with a deterministic notice appended whenever anything was excluded. Admin-toggleable.",
+    resolve: (events) => stageCheck(events, "context_injection_filter"),
   },
   {
     id: "output.not_empty",
@@ -378,11 +389,11 @@ function humanizeStage(stage) {
 }
 
 // Stages that can report passed: false (something genuinely found/flagged) without
-// blocking the turn - context_injection_check answers around the flagged chunk
-// instead of discarding a good answer (see app/core/guardrails.py's
-// evaluate_context_injection docstring), so it must never trigger this badge - the
-// same exclusion answer_node's own blocked_event check already applies server-side.
-const NON_BLOCKING_FAILURE_STAGES = new Set(["context_injection_check"]);
+// blocking the turn - context_injection_filter excludes the flagged chunk(s) and
+// answers from what's left, rather than discarding a good answer (see
+// app/core/guardrails.py's evaluate_injection_filter docstring), so it must never
+// trigger this badge - filter_injected_chunks_node never sets state["blocked"] either.
+const NON_BLOCKING_FAILURE_STAGES = new Set(["context_injection_filter"]);
 
 export function resolveBlockedGuardrailLabel(events) {
   const failed = (events || []).find((e) => e.passed === false && !NON_BLOCKING_FAILURE_STAGES.has(e.stage));

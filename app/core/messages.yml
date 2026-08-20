@@ -39,17 +39,20 @@ topic_restriction:
   default_reason: "This question falls outside the topics this assistant is configured to answer."
   blocked_answer: "That question falls outside what I'm set up to help with here. Feel free to ask me something within the topics I cover, and I'll do my best to help."
 
+escalation_check:
+  default_reason: "Model judged this message, read together with the conversation so far, as an attempt to get the assistant to relax or bypass its own instructions."
+  blocked_answer: "Taken together with our conversation so far, this reads like an attempt to get me to relax or bypass my own instructions, so I'm not able to continue down that path. I'm happy to help with a direct question about your documents instead."
+
 bias_detection:
   default_reason: "Model flagged its own answer as containing unfair or biased characterization."
   blocked_answer: "I put together a response, but it may not have been fully balanced, so I'd rather not show it as-is. Could you try rephrasing your question?"
 
-context_injection_check:
-  default_reason: "Model flagged the retrieved context as containing an instruction directed at the AI assistant, not ordinary document content."
-  # Fallback only - the model writes its own notice about what it found (see
-  # guardrails.py's INDIRECT_INJECTION_DETECTION_INSTRUCTIONS), appended to the real
-  # answer it still generates from the remaining trustworthy context. This is only
-  # used on the rare chance that field comes back empty.
-  fallback_notice: "One of the documents I searched contained something that looked like an attempt to influence my response, so I disregarded it while answering."
+context_injection_filter:
+  default_reason: "{count} chunk(s) were flagged by the pre-answer injection filter and excluded from context."
+  # Deterministically appended to the answer by answer_node whenever the upstream
+  # filter_injected_chunks_node excluded anything - not something the answering LLM
+  # is trusted to remember to say, since it never even sees the excluded chunk(s).
+  user_notice: "Note: {count} chunk(s) from the retrieved documents were flagged by an automated security check as containing a possible prompt-injection attempt and were excluded. I've answered using only the remaining, verified content."
 
 model_safety:
   blocked_prompt: "Model safety filter blocked the prompt: {block_reason}"

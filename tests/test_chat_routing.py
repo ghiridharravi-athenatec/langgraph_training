@@ -10,7 +10,7 @@ instead of ragchatbot.
 from tests.conftest import parse_sse_response, seed_document
 
 
-def _classify_question(self, question, model=None):
+def _classify_question(self, question, model=None, history=None):
     return {"intent": "question", "confidence": 0.99, "guardrail_events": []}
 
 

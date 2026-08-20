@@ -116,10 +116,13 @@ DEFAULTS: Dict[str, Any] = {
     "compliance_keywords": ["guaranteed returns", "guaranteed profit", "risk-free investment", "guaranteed to cure"],
     "bias_detection_enabled": True,
     "tone_calibration_enabled": True,
-    # Model self-reports whether the retrieved Context (not the answer) contains
-    # indirect prompt injection - riding on the same answer-generation call as bias
-    # detection above. See guardrails.py's INDIRECT_INJECTION_DETECTION_* section.
+    # A dedicated, small/fast classifier call scores every retrieved chunk for
+    # indirect prompt injection BEFORE the answering call ever sees them - see
+    # guardrails.py's INJECTION_FILTER_* section and guardrails_agent.screen_chunks_for_injection.
     "indirect_injection_detection_enabled": True,
+    # Minimum classifier confidence a flagged chunk must clear to actually be
+    # excluded from context - see guardrails.evaluate_injection_filter.
+    "indirect_injection_confidence_threshold": 0.5,
 }
 
 _cache: Dict[str, Any] = dict(DEFAULTS)

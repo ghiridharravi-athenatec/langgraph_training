@@ -12,14 +12,15 @@ class IntentClassifier:
     prompt fragments it's given and hands the raw response back for interpretation,
     it never evaluates a guardrail outcome itself.'''
 
-    def classify_intent(self, user_prompt: str, model: str = None) -> dict:
-        guardrail_instructions, guardrail_schema_fields = guardrails_agent.intent_guardrail_fragments()
-        # Whether topic restriction rode on this call - drives whether
-        # interpret_intent_guardrails() below evaluates it. See
+    def classify_intent(self, user_prompt: str, model: str = None, history: list = None) -> dict:
+        guardrail_instructions, guardrail_schema_fields = guardrails_agent.intent_guardrail_fragments(history)
+        # Whether topic restriction / multi-turn escalation rode on this call - drives
+        # whether interpret_intent_guardrails() below evaluates each. See
         # intent_guardrail_fragments()'s docstring for why this can't just be
         # "always evaluate": a call that never asked the model to judge topic_in_scope
-        # shouldn't report a permissive pass on it either.
+        # (or is_escalation_attempt) shouldn't report a permissive pass on it either.
         topic_checked = "topic_in_scope" in guardrail_schema_fields
+        history_checked = "is_escalation_attempt" in guardrail_schema_fields
 
         prompt = f"""
                     You are an intent classification and prompt-safety model for a general-purpose
@@ -83,7 +84,9 @@ class IntentClassifier:
         # in retrieve.py's llm_invoke for why (avoids a circular self-reference).
         parsed = dict(schema_event["parsed"])
 
-        events = [safety_event, schema_event] + guardrails_agent.interpret_intent_guardrails(parsed, topic_checked)
+        events = [safety_event, schema_event] + guardrails_agent.interpret_intent_guardrails(
+            parsed, topic_checked, history_checked
+        )
 
         parsed["guardrail_events"] = events
         parsed["token_count"] = result.token_count
