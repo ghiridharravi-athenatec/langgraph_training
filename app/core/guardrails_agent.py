@@ -81,22 +81,34 @@ class GuardrailsAgent:
         the always-on injection-detection and self-harm-detection instructions, plus
         topic-restriction instructions if an admin has configured allowed_topics, plus
         multi-turn escalation instructions if this conversation already has prior
-        history. Returns (extra_instructions, extra_schema_fields); schema_fields always
-        includes the injection and self-harm fields (both always-on) and only adds the
-        topic/escalation fields when each respectively applies.'''
+        history, plus one shared "write your own rejection message" field covering
+        whichever of injection/topic/escalation are actually active on this call (never
+        self-harm - see build_user_facing_message_instructions' docstring). Returns
+        (extra_instructions, extra_schema_fields); schema_fields always includes the
+        injection and self-harm fields (both always-on) and only adds the
+        topic/escalation/message fields when each respectively applies.'''
         topic_instructions = guardrails.build_topic_restriction_instructions()
         escalation_instructions = guardrails.build_escalation_detection_instructions(history)
+
+        message_fields = ["is_prompt_injection"]
+        if topic_instructions:
+            message_fields.append("topic_in_scope=false")
+        if escalation_instructions:
+            message_fields.append("is_escalation_attempt")
+
         instructions = (
             guardrails.INJECTION_DETECTION_INSTRUCTIONS
             + guardrails.SELF_HARM_DETECTION_INSTRUCTIONS
             + (topic_instructions or "")
             + (escalation_instructions or "")
+            + guardrails.build_user_facing_message_instructions(message_fields)
         )
         schema_fields = f"{guardrails.INJECTION_DETECTION_SCHEMA_FIELDS},\n                    {guardrails.SELF_HARM_DETECTION_SCHEMA_FIELDS}"
         if topic_instructions:
             schema_fields += f",\n                    {guardrails.TOPIC_RESTRICTION_SCHEMA_FIELDS}"
         if escalation_instructions:
             schema_fields += f",\n                    {guardrails.ESCALATION_DETECTION_SCHEMA_FIELDS}"
+        schema_fields += f",\n                    {guardrails.USER_FACING_MESSAGE_SCHEMA_FIELD}"
         return instructions, schema_fields
 
     def interpret_intent_guardrails(
@@ -106,10 +118,13 @@ class GuardrailsAgent:
         response. topic_checked should be True iff intent_guardrail_fragments() included
         topic-restriction instructions on this same call - keeps evaluate_topic_restriction
         from running (and reporting a permissive pass) on a call that never asked for it.
-        history_checked is the same idea for the multi-turn escalation check.'''
+        history_checked is the same idea for the multi-turn escalation check. message is
+        read once and handed to every evaluate_* call below - harmless on whichever ones
+        didn't actually block, since they only store it when they do.'''
+        message = (parsed.get("user_facing_message") or "").strip() or None
         events = [
             guardrails.evaluate_llm_injection_verdict(
-                bool(parsed.get("is_prompt_injection")), parsed.get("injection_reason"),
+                bool(parsed.get("is_prompt_injection")), parsed.get("injection_reason"), message,
             ),
             guardrails.evaluate_self_harm_check(
                 bool(parsed.get("is_self_harm_content")), parsed.get("self_harm_reason"),
@@ -118,13 +133,13 @@ class GuardrailsAgent:
         if topic_checked:
             events.append(
                 guardrails.evaluate_topic_restriction(
-                    bool(parsed.get("topic_in_scope", True)), parsed.get("topic_reason"),
+                    bool(parsed.get("topic_in_scope", True)), parsed.get("topic_reason"), message,
                 )
             )
         if history_checked:
             events.append(
                 guardrails.evaluate_escalation_detection(
-                    bool(parsed.get("is_escalation_attempt")), parsed.get("escalation_reason"),
+                    bool(parsed.get("is_escalation_attempt")), parsed.get("escalation_reason"), message,
                 )
             )
         return events
@@ -149,7 +164,9 @@ class GuardrailsAgent:
             return None
         if "bias_flag" not in parsed:
             return None
-        return guardrails.evaluate_bias_detection(bool(parsed.get("bias_flag")), parsed.get("bias_reason"))
+        return guardrails.evaluate_bias_detection(
+            bool(parsed.get("bias_flag")), parsed.get("bias_reason"), parsed.get("bias_message"),
+        )
 
     def screen_chunks_for_injection(self, chunks: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         '''Deterministic pre-filter: scores every chunk for indirect prompt injection via
@@ -188,7 +205,10 @@ class GuardrailsAgent:
             )
 
         verdicts = schema_event["parsed"].get("verdicts") or []
-        event = guardrails.evaluate_injection_filter(verdicts, labeled, cfg["indirect_injection_confidence_threshold"])
+        user_notice = (schema_event["parsed"].get("user_notice") or "").strip() or None
+        event = guardrails.evaluate_injection_filter(
+            verdicts, labeled, cfg["indirect_injection_confidence_threshold"], user_notice,
+        )
         flagged_sources = {f["source"] for f in event["flagged_chunks"]}
         kept_chunks = [chunk for chunk, entry in zip(chunks, labeled) if entry["label"] not in flagged_sources]
         return kept_chunks, event

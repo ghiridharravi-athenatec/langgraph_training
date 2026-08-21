@@ -29,6 +29,16 @@ TRACES_PROJECT_NAME = "Guardrails Observability"
 TRACES_PROJECT_DESCRIPTION = "Guardrail observability across every user's conversations - who asked what, and every check it passed through."
 
 
+# Pre-existing project (created before this feature's own bootstrap entry was added
+# here) - "ai-search" is the id already in use, with permissions already granted
+# against it, so this seeds the SAME id rather than minting a new one. $setOnInsert
+# means this is a no-op on every install that already has it; it only matters for a
+# genuinely fresh install with no projects collection yet.
+SEARCH_ASK_PROJECT_ID = "ai-search"
+SEARCH_ASK_PROJECT_NAME = "Search & Ask"
+SEARCH_ASK_PROJECT_DESCRIPTION = "General-purpose chat, answered from the model's own knowledge - not grounded in any uploaded document."
+
+
 def seed_defaults() -> None:
     ensure_indexes()
 
@@ -44,6 +54,9 @@ def seed_defaults() -> None:
 
     upsert_default_project(TRACES_PROJECT_ID, TRACES_PROJECT_NAME, TRACES_PROJECT_DESCRIPTION)
     logger.info("Ensured default project '%s' exists", TRACES_PROJECT_ID)
+
+    upsert_default_project(SEARCH_ASK_PROJECT_ID, SEARCH_ASK_PROJECT_NAME, SEARCH_ASK_PROJECT_DESCRIPTION)
+    logger.info("Ensured default project '%s' exists", SEARCH_ASK_PROJECT_ID)
 
     # One-time migration: conversations created before project-scoping existed have no
     # project_id - they can only have come from the document chatbot (the only chat

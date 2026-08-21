@@ -1,6 +1,7 @@
 import { useParams } from "react-router-dom";
 import RagChatbot from "./RagChatbot";
 import DatabaseChatbot from "./DatabaseChatbot";
+import SearchAndAsk from "./SearchAndAsk";
 import TracesProject from "./Traces";
 import ProjectPlaceholder from "./ProjectPlaceholder";
 
@@ -14,6 +15,7 @@ export default function ProjectView() {
 
   if (projectId === "ragchatbot") return <RagChatbot />;
   if (projectId === "database-chatbot") return <DatabaseChatbot />;
+  if (projectId === "ai-search") return <SearchAndAsk />;
   if (projectId === "guardrail-traces") return <TracesProject />;
   return <ProjectPlaceholder />;
 }

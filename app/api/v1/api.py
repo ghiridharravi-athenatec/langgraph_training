@@ -36,24 +36,32 @@ from app.core.semantic_cache import find_cache_match
 from app.core.streaming import stream_answer
 from app.api.v1.auth import router as auth_router
 from app.api.v1.admin import router as admin_router
-from app.api.v1.conversations import conversations_router, database_conversations_router
+from app.api.v1.conversations import build_conversations_router, conversations_router, database_conversations_router
 from app.api.v1.documents import router as documents_router
 from app.api.v1.database import router as database_router
 from app.api.v1.projects import router as projects_router
 from app.api.v1.traces import router as traces_router
 from app.api.v1.guardrail_settings import router as guardrail_settings_router
 from app.api.v1.progress import router as progress_router
+from app.api.v1.search_ask import router as search_ask_router
 
 router = APIRouter()
 load_dotenv()
 logger = get_logger(__name__)
 
+# Chat history for Search & Ask lives behind the same project gate as its own
+# chat/document endpoints, via the same factory the other two chat projects use -
+# see app/api/v1/conversations.py's build_conversations_router docstring.
+search_ask_conversations_router = build_conversations_router("ai-search", "/search-ask/conversations")
+
 router.include_router(auth_router)
 router.include_router(admin_router)
 router.include_router(conversations_router)
 router.include_router(database_conversations_router)
+router.include_router(search_ask_conversations_router)
 router.include_router(documents_router)
 router.include_router(database_router)
+router.include_router(search_ask_router)
 router.include_router(projects_router)
 router.include_router(traces_router)
 router.include_router(guardrail_settings_router)
@@ -378,9 +386,15 @@ async def _generate_chat_response(state: QAResponse, current_user: dict) -> dict
         if blocked_event:
             logger.warning("Chat request blocked by model guardrail (%s): %s", blocked_event["stage"], blocked_event["reason"])
             answer_key = _MODEL_GUARDRAIL_BLOCKED_ANSWER_KEYS.get(blocked_event["stage"], "model_safety.blocked_answer")
+            # Prefers the model's own polite phrasing of this same block (written on the
+            # same classification call - see guardrails.build_user_facing_message_instructions),
+            # falling back to the static messages.yml text when it's missing/empty - a
+            # schema-validation failure on that field, or a check (self_harm_check,
+            # model_safety) that never asks for one, both look the same here: no message,
+            # normal fallback.
             response = {
                 "message": "Request blocked by model safety filter",
-                "answer": msg(answer_key),
+                "answer": blocked_event.get("user_facing_message") or msg(answer_key),
                 "logs": result.get("logs", []) + [f"[guardrail:{blocked_event['stage']}] BLOCKED - {blocked_event['reason']}"],
                 "graph_response": _build_graph_response(state, extra_guardrail_events=guardrail_events),
             }

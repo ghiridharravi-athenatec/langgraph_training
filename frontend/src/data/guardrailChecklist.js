@@ -350,6 +350,26 @@ const DATABASE_CHECKLIST_IDS = [
 
 export const DATABASE_GUARDRAIL_CHECKLIST = GUARDRAIL_CHECKLIST.filter((item) => DATABASE_CHECKLIST_IDS.includes(item.id));
 
+// Search & Ask (app/api/v1/search_ask.py) is a general-purpose chat, "same as a normal
+// LLM" - no retrieval, so document/retrieval-only checks don't apply (knowledge base,
+// cache, retrieval relevance, context budget, indirect-injection chunk filtering,
+// groundedness). Unlike the database agent, it DOES reuse the model-judged checks that
+// ride on one classification call (prompt injection, self-harm, topic restriction,
+// escalation) plus bias detection - all combined into its single answer-generation call
+// (see search_ask.py's module docstring) - and reports them under the exact same stage
+// names, so the existing catalog entries below apply unchanged.
+const SEARCH_ASK_CHECKLIST_IDS = [
+  "input.length", "input.prompt_injection_regex", "input.blocked_keywords", "input.pii_masking",
+  "quota_check",
+  "model_output_validation", "model_output_schema",
+  "model_prompt_injection_check", "self_harm_check", "topic_restriction", "escalation_check",
+  "bias_detection",
+  "output.not_empty", "output.blocked_keywords", "output.compliance_validation", "output.pii_masking",
+  "output.url_allowlist", "output.length_limit", "output.tone_check",
+];
+
+export const SEARCH_ASK_GUARDRAIL_CHECKLIST = GUARDRAIL_CHECKLIST.filter((item) => SEARCH_ASK_CHECKLIST_IDS.includes(item.id));
+
 export function groupChecklist(checklist = GUARDRAIL_CHECKLIST) {
   const groups = [];
   for (const item of checklist) {
