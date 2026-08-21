@@ -85,6 +85,10 @@ def get_database_connections_collection(db_name: str = DB_NAME):
     return get_mongo_client()[db_name]["database_connections"]
 
 
+def get_search_ask_documents_collection(db_name: str = DB_NAME):
+    return get_mongo_client()[db_name]["search_ask_documents"]
+
+
 def user_has_documents(user_id: str, db_name: str = DB_NAME) -> bool:
     '''Per-user, matching retrieval's per-user isolation - chat only ever searches
     this user's own ingested chunks, so "does chat have anything to answer from" has
@@ -117,10 +121,11 @@ def ensure_indexes(db_name: str = DB_NAME) -> None:
     get_messages_collection(db_name).create_index([("user_id", 1), ("cached", 1)])
     get_documents_collection(db_name).create_index([("user_id", 1), ("created_at", -1)])
     get_database_connections_collection(db_name).create_index([("user_id", 1), ("created_at", -1)])
+    get_search_ask_documents_collection(db_name).create_index([("user_id", 1), ("created_at", -1)])
     logger.info(
         "Ensured indexes on users/projects/permissions/login_attempts/used_refresh_tokens/"
         "used_password_reset_tokens/password_reset_attempts/usage/conversations/messages/"
-        "documents collections"
+        "documents/search_ask_documents collections"
     )
 
 
@@ -745,6 +750,34 @@ def list_documents(user_id: Optional[str] = None, db_name: str = DB_NAME) -> Lis
 
 def get_document(document_id: str, db_name: str = DB_NAME) -> Optional[Dict[str, Any]]:
     return get_documents_collection(db_name).find_one({"_id": document_id})
+
+
+# ---------------------------------------------------------------------------
+# Search & Ask - uploaded-file tracking only. Deliberately a separate collection
+# from documents/DOCUMENT_CHUNKS_COLLECTION above: this project's uploads are
+# stored as-is (no extraction, chunking, PII masking, or embedding), so reusing
+# the ragchatbot documents collection would risk a Search & Ask upload silently
+# satisfying user_has_documents() for the RAG chatbot, or showing up there with a
+# chunk_count that was never actually produced.
+# ---------------------------------------------------------------------------
+
+def create_search_ask_document_record(
+    user_id: str, filename: str, content_type: str, size_bytes: int, db_name: str = DB_NAME,
+) -> Dict[str, Any]:
+    doc = {
+        "_id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "filename": filename,
+        "content_type": content_type,
+        "size_bytes": size_bytes,
+        "created_at": _now(),
+    }
+    get_search_ask_documents_collection(db_name).insert_one(doc)
+    return doc
+
+
+def list_search_ask_documents(user_id: str, db_name: str = DB_NAME) -> List[Dict[str, Any]]:
+    return list(get_search_ask_documents_collection(db_name).find({"user_id": user_id}).sort("created_at", -1))
 
 
 # ---------------------------------------------------------------------------

@@ -67,6 +67,12 @@ export default function DatabaseChatbot() {
     !!activeConversation?.connection_id && !connections.some((c) => c.id === activeConversation.connection_id);
 
   const scrollRef = useRef(null);
+  // Guards handleSend against double-submission (fast double-click/double-Enter
+  // before the "sending" state re-render actually disables the button) - the
+  // `sending` state alone isn't enough, since a second call can read the same
+  // stale (pre-render) value from its closure. A ref updates synchronously, so
+  // this closes that race window entirely.
+  const sendingRef = useRef(false);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -163,9 +169,19 @@ export default function DatabaseChatbot() {
   async function handleSend(e) {
     e.preventDefault();
     const question = input.trim();
-    if (!question || sending || !selectedConnectionId || activeConnectionMissing) return;
+    if (!question || sendingRef.current || !selectedConnectionId || activeConnectionMissing) return;
+    sendingRef.current = true;
 
-    setMessages((prev) => [...prev, { role: "user", content: question }]);
+    // Every message this turn creates - the user's own question and the
+    // streaming assistant reply - carries this same requestId in its id, so
+    // later updates can find-and-replace the right one by identity instead of
+    // assuming "whichever message is currently last in the array" is always
+    // this turn's own placeholder. That assumption breaks if anything else
+    // ever appends to messages while a stream is in flight - previously this
+    // is exactly what let one turn's streamed text land inside another
+    // message's bubble.
+    const requestId = crypto.randomUUID();
+    setMessages((prev) => [...prev, { id: `${requestId}-user`, role: "user", content: question }]);
     setInput("");
     setSending(true);
     setLiveStage("");
@@ -174,7 +190,6 @@ export default function DatabaseChatbot() {
     // whichever pipeline/agent stage last ran (see app/core/progress.py), so the
     // "thinking" indicator reflects real backend progress instead of just
     // cycling a fixed list on a timer.
-    const requestId = crypto.randomUUID();
     const pollId = setInterval(async () => {
       try {
         const { data } = await api.get(`/progress/${requestId}`);
@@ -190,6 +205,7 @@ export default function DatabaseChatbot() {
     // token streaming. streamStarted flips the moment the first chunk arrives,
     // swapping the ThinkingIndicator for a growing assistant bubble.
     let streamStarted = false;
+    const assistantId = `${requestId}-assistant`;
 
     try {
       const data = await streamChat(
@@ -206,18 +222,16 @@ export default function DatabaseChatbot() {
             setMessages((prev) => {
               if (!streamStarted) {
                 streamStarted = true;
-                return [...prev, { role: "assistant", content: text, streaming: true }];
+                return [...prev, { id: assistantId, role: "assistant", content: text, streaming: true }];
               }
-              const next = [...prev];
-              const last = next[next.length - 1];
-              next[next.length - 1] = { ...last, content: last.content + text };
-              return next;
+              return prev.map((m) => (m.id === assistantId ? { ...m, content: m.content + text } : m));
             });
           },
         }
       );
 
       const finalMessage = {
+        id: assistantId,
         role: "assistant",
         content: data.answer || "No answer received.",
         response_time_ms: data.response_time_ms,
@@ -226,26 +240,23 @@ export default function DatabaseChatbot() {
       };
       setMessages((prev) => {
         if (!streamStarted) return [...prev, finalMessage];
-        const next = [...prev];
-        next[next.length - 1] = finalMessage;
-        return next;
+        return prev.map((m) => (m.id === assistantId ? finalMessage : m));
       });
       if (data.conversation_id && data.conversation_id !== activeConversationId) {
         setActiveConversationId(data.conversation_id);
       }
       loadConversations();
     } catch (err) {
-      const errorMessage = { role: "assistant", content: `Error: ${formatErrorDetail(err, "Failed to reach the backend.")}` };
+      const errorMessage = { id: assistantId, role: "assistant", content: `Error: ${formatErrorDetail(err, "Failed to reach the backend.")}` };
       setMessages((prev) => {
         if (!streamStarted) return [...prev, errorMessage];
-        const next = [...prev];
-        next[next.length - 1] = errorMessage;
-        return next;
+        return prev.map((m) => (m.id === assistantId ? errorMessage : m));
       });
     } finally {
       clearInterval(pollId);
       setLiveStage("");
       setSending(false);
+      sendingRef.current = false;
     }
   }
 
@@ -373,7 +384,7 @@ export default function DatabaseChatbot() {
                   )}
 
                   {messages.map((msg, i) => (
-                    <div key={i} className={`chat-message chat-message-${msg.role}`}>
+                    <div key={msg.id || msg.turn_id || i} className={`chat-message chat-message-${msg.role}`}>
                       <div className="chat-bubble">
                         {msg.role === "assistant" ? (
                           <div className="markdown-body">

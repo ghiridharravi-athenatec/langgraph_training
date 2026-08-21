@@ -12,6 +12,7 @@ const PROJECT_META = {
   ragchatbot: { tag: "Document chat", icon: "▤", accent: "document" },
   "database-chatbot": { tag: "Database chat", icon: "⛁", accent: "database" },
   "guardrail-traces": { tag: "Observability", icon: "≋", accent: "guardrails" },
+  "ai-search": { tag: "In Development", icon: "◈", accent: "search" },
 };
 const FALLBACK_META = { tag: "In development", icon: "◧", accent: "muted" };
 

@@ -677,8 +677,11 @@ def answer_node(state: RAGState):
     blocked_event = next((e for e in events if not e["passed"]), None)
     if blocked_event:
         answer_key = _ANSWER_GUARDRAIL_BLOCKED_ANSWER_KEYS.get(blocked_event["stage"], "model_output_schema.blocked_answer")
+        # Same "model's own phrasing, static fallback if absent" pattern as api.py's
+        # intent-classification block handling - see
+        # guardrails.build_user_facing_message_instructions.
         return {
-            "answer": msg(answer_key),
+            "answer": blocked_event.get("user_facing_message") or msg(answer_key),
             "blocked": True,
             "block_reason": blocked_event["reason"],
             "guardrail_events": events,
@@ -688,17 +691,19 @@ def answer_node(state: RAGState):
 
     # filter_injected_chunks_node ran upstream, before this call was ever made, so its
     # event is already sitting in state["guardrail_events"] (accumulated via
-    # operator.add), not in this call's own `events`. Appending the deterministic
-    # user_notice here - not asking the answering LLM to mention it - guarantees the
-    # phrase appears whenever a chunk was actually excluded, regardless of what the
-    # model does or doesn't say.
+    # operator.add), not in this call's own `events`. Appending the notice here - not
+    # asking the answering LLM to mention it - guarantees the phrase appears whenever a
+    # chunk was actually excluded, regardless of what the model does or doesn't say.
+    # Prefers the injection-filter classifier's own phrasing (event["user_notice"] -
+    # written on that same classification call) over the static messages.yml template.
     injection_event = next(
         (e for e in state.get("guardrail_events", []) if e["stage"] == "context_injection_filter" and e.get("excluded_count")),
         None,
     )
     answer_text = response.get("answer")
     if injection_event:
-        answer_text = f"{answer_text}\n\n{msg('context_injection_filter.user_notice', count=injection_event['excluded_count'])}"
+        notice = injection_event.get("user_notice") or msg("context_injection_filter.user_notice", count=injection_event["excluded_count"])
+        answer_text = f"{answer_text}\n\n{notice}"
 
     return {
         "answer": answer_text,
