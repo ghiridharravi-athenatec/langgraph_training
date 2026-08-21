@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { formatErrorDetail } from "../api/client";
 import { useAuth } from "../context/AuthContext";
 import { isValidEmail } from "../utils/validation";
@@ -16,13 +16,10 @@ const DEMO_ACCOUNTS = [
 export default function Login() {
   const { login } = useAuth();
   const navigate = useNavigate();
-  const location = useLocation();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
-
-  const from = location.state?.from?.pathname || "/";
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -36,7 +33,10 @@ export default function Login() {
     setSubmitting(true);
     try {
       await login(email, password);
-      navigate(from, { replace: true });
+      // Always land on the home page after logging in - never redirect back to
+      // wherever an expired-session bounce sent them from (see ProtectedRoute.jsx's
+      // state:{from:location}), so login always feels like a fresh start.
+      navigate("/", { replace: true });
     } catch (err) {
       setError(formatErrorDetail(err));
     } finally {
