@@ -100,7 +100,10 @@ export default function RagChatbot() {
   }, [messages, sending]);
 
   useEffect(() => {
-    loadConversations({ selectFirst: true });
+    // Loads the sidebar's conversation list only - deliberately not selectFirst,
+    // so opening this project always starts on a fresh "new chat" screen instead
+    // of silently reopening whatever conversation was last active.
+    loadConversations();
     checkDocumentsStatus();
     loadPiiOptions();
   }, []);

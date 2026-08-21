@@ -62,7 +62,10 @@ export default function SearchAndAsk() {
   }, [messages, sending]);
 
   useEffect(() => {
-    loadConversations({ selectFirst: true });
+    // Loads the sidebar's conversation list only - deliberately not selectFirst,
+    // so opening this project always starts on a fresh "new chat" screen instead
+    // of silently reopening whatever conversation was last active.
+    loadConversations();
   }, []);
 
   async function loadConversations({ selectFirst = false } = {}) {
