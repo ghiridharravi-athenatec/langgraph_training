@@ -37,4 +37,4 @@ pytest
 pytest-asyncio
 mongomock
 # after install, download the spaCy NER model presidio-analyzer needs:
-#   python -m spacy download en_core_web_md
+#   python -m spacy download en_core_web_sm
