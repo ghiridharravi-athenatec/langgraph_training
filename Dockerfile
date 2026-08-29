@@ -20,7 +20,7 @@ COPY requirements.txt .
 # satisfied and pip skips reinstalling it.
 RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu "torch>=2.3.0" \
     && pip install --no-cache-dir -r requirements.txt \
-    && python -m spacy download en_core_web_sm
+    && python -m spacy download en_core_web_md
 
 COPY app ./app
 COPY streamlit_app.py .
