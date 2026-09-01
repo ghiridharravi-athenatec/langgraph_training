@@ -6,6 +6,7 @@ from app.utils.mongo import (
     ROLE_ADMIN,
     backfill_conversation_project_ids,
     create_user,
+    disable_project,
     ensure_indexes,
     get_user_by_email,
     rename_project_if_still_default,
@@ -18,7 +19,7 @@ logger = get_logger(__name__)
 
 DEFAULT_PROJECT_ID = "ragchatbot"
 DEFAULT_PROJECT_NAME = "Conversational Intelligence"
-DEFAULT_PROJECT_DESCRIPTION = "Chat over whatever documents your team has uploaded."
+DEFAULT_PROJECT_DESCRIPTION = "Chat grounded only in your uploaded documents and connected database - a Supervisor decides which to answer from, and says it doesn't know rather than guessing."
 
 DATABASE_PROJECT_ID = "database-chatbot"
 DATABASE_PROJECT_NAME = "Database Agent"
@@ -37,6 +38,13 @@ TRACES_PROJECT_DESCRIPTION = "Guardrail observability across every user's conver
 SEARCH_ASK_PROJECT_ID = "ai-search"
 SEARCH_ASK_PROJECT_NAME = "Search & Ask"
 SEARCH_ASK_PROJECT_DESCRIPTION = "General-purpose chat, answered from the model's own knowledge - not grounded in any uploaded document."
+
+# The "assistant" project was removed - document+database chat now lives inside
+# DEFAULT_PROJECT_ID ("Conversational Intelligence") itself, via its own Supervisor
+# routing (see app/api/v1/api.py's _generate_chat_response). This id is kept only so
+# seed_defaults() can retire an already-seeded copy in an existing database - see the
+# disable_project call below.
+_RETIRED_ASSISTANT_PROJECT_ID = "assistant"
 
 
 def seed_defaults() -> None:
@@ -57,6 +65,9 @@ def seed_defaults() -> None:
 
     upsert_default_project(SEARCH_ASK_PROJECT_ID, SEARCH_ASK_PROJECT_NAME, SEARCH_ASK_PROJECT_DESCRIPTION)
     logger.info("Ensured default project '%s' exists", SEARCH_ASK_PROJECT_ID)
+
+    if disable_project(_RETIRED_ASSISTANT_PROJECT_ID):
+        logger.info("Disabled retired project '%s'", _RETIRED_ASSISTANT_PROJECT_ID)
 
     # One-time migration: conversations created before project-scoping existed have no
     # project_id - they can only have come from the document chatbot (the only chat

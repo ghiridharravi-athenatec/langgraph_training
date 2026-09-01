@@ -41,6 +41,13 @@ function stageCheck(events, stage) {
     excludedCount: event.excluded_count,
     checkedCount: event.checked_count,
     action: event.action,
+    route: event.route,
+    availableRoutes: event.available_routes,
+    tier3Skip: event.tier3_skip,
+    fallbackUsed: event.fallback_used,
+    sourceFallbackUsed: event.source_fallback_used,
+    sourceFallbackFrom: event.source_fallback_from,
+    modelTier: event.model_tier,
   };
 }
 
@@ -333,6 +340,36 @@ export const GUARDRAIL_CHECKLIST = [
     description:
       "Flags (without blocking) informal phrasing — shouting punctuation or slang — that drifts from a professional tone. Admin-toggleable.",
     resolve: (events) => subCheck(events, "output_validation", "tone_check"),
+  },
+  {
+    id: "chat_source_check",
+    label: "Has a source to answer from",
+    group: "Knowledge base",
+    category: "Input",
+    type: "Deterministic",
+    description:
+      "Blocks the turn if the user has neither ingested a document nor connected a database - there is deliberately no general-knowledge fallback, so with nothing grounded to answer from, the turn is blocked rather than answered from the model's own knowledge.",
+    resolve: (events) => stageCheck(events, "chat_source_check"),
+  },
+  {
+    id: "orchestrator_routing",
+    label: "Supervisor routing",
+    group: "Model (input)",
+    category: "Input",
+    type: "Model-based",
+    description:
+      "On the document chatbot (ragchatbot/\"Conversational Intelligence\"): a bounded routing call decides whether this turn is answered from the user's documents, their connected database, or both (only when the question genuinely needs both) - picked from a closed set already filtered to what this user can access, and never including a general-knowledge option. When the model picker is set to \"Auto\", the same call also picks a model tier by question complexity. If the chosen source comes back empty, an automatic fallback retries the other source before giving up. Never blocks - it only picks which already-fully-guarded, grounded pipeline runs next. Skipped entirely (shows as not run) when only one source is available, since there's nothing to decide.",
+    resolve: (events) => stageCheck(events, "orchestrator_routing"),
+  },
+  {
+    id: "tier3_skip_decision",
+    label: "Supervisor check-skip decision",
+    group: "Model (input)",
+    category: "Input",
+    type: "Model-based",
+    description:
+      "Only on the document chatbot (ragchatbot): a bounded decision, piggybacked onto the intent-classification call it already makes for every question (zero added LLM calls), on whether the optional bias-detection self-check is relevant to this specific question. Never blocks - it only decides whether a little extra text rides along on the answer-generation call. When in doubt the model is instructed not to skip.",
+    resolve: (events) => stageCheck(events, "tier3_skip_decision"),
   },
 ];
 

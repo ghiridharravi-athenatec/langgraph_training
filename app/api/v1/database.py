@@ -1,5 +1,6 @@
 import time
 from datetime import date
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -151,6 +152,80 @@ def _persist_and_respond(
     }
 
 
+def generate_database_answer(
+    question: str, connection: dict, current_user: dict, model: Optional[str], history: list, request_id: Optional[str],
+    show_tier1_progress: bool = True,
+) -> dict:
+    '''The guardrails+generation core of /database/chat's database_chat route, with no
+    conversation lookup or persistence - callable both from _generate_database_chat_response
+    below (unchanged behavior) and from app/api/v1/api.py's own document+database
+    Supervisor dispatch (_generate_chat_response), so there's exactly one implementation
+    of "how to answer a database question" rather than two that can drift. Always
+    returns {"question", "answer", "blocked", "guardrail_events", "logs", "message"} -
+    "question" is whichever variant (raw or sanitized) should actually be persisted,
+    since that differs by which check blocked. Re-runs check_input/check_quota internally
+    even though a dispatcher may have already run its own Tier-1 versions - defense in
+    depth: this function must stay correct when called directly too, never trusting an
+    external caller already checked. show_tier1_progress=False (only ever passed by the
+    Supervisor dispatch) suppresses just the cosmetic progress.update() text for those two
+    redundant checks - the dispatcher already showed the same text before deciding to
+    route here, so re-emitting it would make the live "thinking" indicator look like it
+    jumped backwards right after showing the Supervisor's routing decision. The checks
+    themselves always still run regardless.'''
+    if show_tier1_progress:
+        progress.update(request_id, "Guardrails: validating your question…")
+    input_check = guardrails_agent.check_input(question)
+    if not input_check["passed"]:
+        logger.warning("Database chat request blocked by input guardrail: %s", input_check["reason"])
+        return {
+            "question": question, "answer": msg("common.blocked_prefix", reason=input_check["reason"]), "blocked": True,
+            "guardrail_events": [input_check], "logs": [f"[guardrail:input_validation] BLOCKED - {input_check['reason']}"],
+            "message": "Request blocked by input validation",
+        }
+    question = input_check["sanitized_question"]
+
+    # Same daily-quota rule the document chatbot enforces, applied to this user's
+    # combined usage across both chatbots (increment_usage/get_daily_usage are
+    # shared, not scoped per-project) - exceeding quota on one blocks the other too.
+    daily_usage = get_daily_usage(current_user["_id"], date.today().isoformat())
+    daily_quota = current_user.get("daily_token_quota")
+    if daily_quota is None:
+        daily_quota = guardrail_config.get_config()["daily_token_quota"]
+    if show_tier1_progress:
+        progress.update(request_id, "Guardrails: checking your quota…")
+    quota_event = guardrails_agent.check_quota(daily_usage, daily_quota)
+    if not quota_event["passed"]:
+        logger.warning("Database chat request blocked by quota guardrail: %s", quota_event["reason"])
+        return {
+            "question": question, "answer": msg("common.blocked_prefix", reason=quota_event["reason"]), "blocked": True,
+            "guardrail_events": [input_check, quota_event], "logs": [f"[guardrail:quota_check] BLOCKED - {quota_event['reason']}"],
+            "message": "Request blocked by quota",
+        }
+
+    details = db_connections.decrypt_connection_details(connection["encrypted_details"])
+
+    progress.update(request_id, "Database Agent: inspecting the database…")
+    result = run_db_agent(question, details, model=model, history=history, request_id=request_id)
+    logger.info("Database chat answered against connection '%s'", connection["name"])
+
+    increment_usage(current_user["_id"], date.today().isoformat(), result.get("token_count", 0))
+
+    # Same output guardrail the document chatbot applies to its answers - a query
+    # result can just as easily contain real PII (names, emails, phone numbers in a
+    # table) as an ingested document can, so it gets the same blocked-keyword/PII
+    # masking pass before ever reaching the user.
+    progress.update(request_id, "Guardrails: checking the answer…")
+    output_event = guardrails_agent.check_output(result["answer"])
+    blocked = not output_event["passed"]
+    answer = output_event["sanitized_answer"] if output_event["passed"] else msg("output_validation.blocked_answer")
+
+    return {
+        "question": question, "answer": answer, "blocked": blocked,
+        "guardrail_events": [input_check, quota_event] + result["guardrail_events"] + [output_event],
+        "logs": result["logs"], "message": "Chat completed successfully",
+    }
+
+
 def _generate_database_chat_response(payload: DatabaseChatRequest, current_user: dict) -> dict:
     '''Everything /database/chat used to do directly - unchanged. Split out so the
     route handler below can stream the finished, already-guardrail-checked response
@@ -183,65 +258,14 @@ def _generate_database_chat_response(payload: DatabaseChatRequest, current_user:
                 "active connection."
             ),
         )
-
         if conversation_id is None:
             conversation_id = create_conversation(current_user["_id"], "database-chatbot", connection_id=connection_id)["_id"]
 
-        # Same input guardrail (length/prompt-injection/blocked-keyword checks) the
-        # document chatbot applies before it does anything else - a database question
-        # deserves the same screening a document question gets.
-        progress.update(payload.request_id, "Guardrails Agent: validating your question…")
-        input_check = guardrails_agent.check_input(payload.question)
-        if not input_check["passed"]:
-            logger.warning("Database chat request blocked by input guardrail: %s", input_check["reason"])
-            return _persist_and_respond(
-                conversation_id, current_user["_id"], payload.question,
-                msg("common.blocked_prefix", reason=input_check["reason"]), True, [input_check],
-                [f"[guardrail:input_validation] BLOCKED - {input_check['reason']}"], start,
-                "Request blocked by input validation",
-            )
-        question = input_check["sanitized_question"]
-
-        # Same daily-quota rule the document chatbot enforces, applied to this user's
-        # combined usage across both chatbots (increment_usage/get_daily_usage are
-        # shared, not scoped per-project) - exceeding quota on one blocks the other too.
-        daily_usage = get_daily_usage(current_user["_id"], date.today().isoformat())
-        daily_quota = current_user.get("daily_token_quota")
-        if daily_quota is None:
-            daily_quota = guardrail_config.get_config()["daily_token_quota"]
-        progress.update(payload.request_id, "Guardrails Agent: checking your quota…")
-        quota_event = guardrails_agent.check_quota(daily_usage, daily_quota)
-        if not quota_event["passed"]:
-            logger.warning("Database chat request blocked by quota guardrail: %s", quota_event["reason"])
-            return _persist_and_respond(
-                conversation_id, current_user["_id"], question,
-                msg("common.blocked_prefix", reason=quota_event["reason"]), True, [input_check, quota_event],
-                [f"[guardrail:quota_check] BLOCKED - {quota_event['reason']}"], start,
-                "Request blocked by quota",
-            )
-
-        details = db_connections.decrypt_connection_details(connection["encrypted_details"])
         history = get_conversation_history(conversation_id, config.CHAT_HISTORY_MAX_TURNS)
-
-        progress.update(payload.request_id, "Database Agent: inspecting the database…")
-        result = run_db_agent(question, details, model=payload.model, history=history, request_id=payload.request_id)
-        logger.info("Database chat answered for %s against connection '%s'", current_user["email"], connection["name"])
-
-        increment_usage(current_user["_id"], date.today().isoformat(), result.get("token_count", 0))
-
-        # Same output guardrail the document chatbot applies to its answers - a query
-        # result can just as easily contain real PII (names, emails, phone numbers in a
-        # table) as an ingested document can, so it gets the same blocked-keyword/PII
-        # masking pass before ever reaching the user.
-        progress.update(payload.request_id, "Guardrails Agent: checking the answer…")
-        output_event = guardrails_agent.check_output(result["answer"])
-        blocked = not output_event["passed"]
-        answer = output_event["sanitized_answer"] if output_event["passed"] else msg("output_validation.blocked_answer")
-
+        result = generate_database_answer(payload.question, connection, current_user, payload.model, history, payload.request_id)
         return _persist_and_respond(
-            conversation_id, current_user["_id"], question, answer, blocked,
-            [input_check, quota_event] + result["guardrail_events"] + [output_event],
-            result["logs"], start, "Chat completed successfully",
+            conversation_id, current_user["_id"], result["question"], result["answer"], result["blocked"],
+            result["guardrail_events"], result["logs"], start, result["message"],
         )
     finally:
         progress.finish(payload.request_id)

@@ -35,3 +35,7 @@ class QAResponse(BaseModel):
     blocked: bool = False
     block_reason: Optional[str] = None
     token_count: int = 0
+    # Set server-side by generate_document_answer (app/api/v1/api.py) right before the
+    # graph runs - the bounded, piggybacked Tier-3 decision on which optional checks
+    # (see app/core/orchestrator.py's TIER3_ALLOWLIST) to skip for this question.
+    tier3_skip: List[str] = []

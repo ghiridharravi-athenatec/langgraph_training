@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import api, { formatErrorDetail, streamChat } from "../api/client";
 import DatabaseIngestPanel from "../components/DatabaseIngestPanel";
+import CopyButton from "../components/CopyButton";
 import ModelPicker from "../components/ModelPicker";
 import ThemeToggle from "../components/ThemeToggle";
 import ThinkingIndicator from "../components/ThinkingIndicator";
@@ -24,12 +25,12 @@ const SECTIONS = [
 // polling never succeeds at all). Kept in the same order the real pipeline
 // stages actually fire in, so the fallback and the live version read the same.
 const THINKING_MESSAGES = [
-  "Guardrails Agent: validating your question…",
-  "Guardrails Agent: checking your quota…",
+  "Guardrails: validating your question…",
+  "Guardrails: checking your quota…",
   "Database Agent: inspecting the database…",
   "Database Agent: running a query…",
   "Database Agent: reviewing the results…",
-  "Guardrails Agent: checking the answer…",
+  "Guardrails: checking the answer…",
 ];
 
 const SUGGESTED_PROMPTS = [
@@ -56,7 +57,7 @@ export default function DatabaseChatbot() {
   const [connections, setConnections] = useState([]);
   const [hasConnections, setHasConnections] = useState(null); // null = not checked yet, so the banner never flashes
   const [selectedConnectionId, setSelectedConnectionId] = useState("");
-  const [selectedModel, setSelectedModel] = useState("sonnet");
+  const [selectedModel, setSelectedModel] = useState("auto");
 
   // True when the open conversation is pinned to a connection that's since been
   // deleted - the input gets disabled instead of letting the user hit a confusing
@@ -397,6 +398,7 @@ export default function DatabaseChatbot() {
                           <p>{msg.content}</p>
                         )}
                       </div>
+                      {msg.role === "user" && <CopyButton text={msg.content} label="Copy question" />}
                       {msg.role === "assistant" && msg.response_time_ms != null && (
                         <span className="chat-response-time" title="Time to generate this answer">
                           {formatResponseTime(msg.response_time_ms)}
@@ -410,6 +412,9 @@ export default function DatabaseChatbot() {
                         <button type="button" className="chat-logs-toggle" onClick={() => viewTrace(msg.turn_id)}>
                           View Trace
                         </button>
+                      )}
+                      {msg.role === "assistant" && !msg.streaming && (
+                        <CopyButton text={formatPiiTokens(msg.content)} />
                       )}
                       {msg.role === "assistant" && <ToolCallLog events={msg.guardrail_events} />}
                     </div>

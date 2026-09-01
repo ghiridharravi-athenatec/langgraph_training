@@ -89,6 +89,43 @@ def test_groundedness_passes_similar_answer():
     assert event["passed"] is True
 
 
+def test_validate_output_node_skips_groundedness_on_self_reported_decline(monkeypatch):
+    '''answer_node's prompt instructs the model to return NO_ANSWER_IN_CONTEXT_TEXT
+    verbatim when the context doesn't answer the question - validate_output_node
+    should recognize that exact decline and skip the (embedding-based, non-trivial-cost)
+    groundedness check entirely rather than scoring a fixed phrase against arbitrary
+    context, which has no real relationship to whether declining was correct.'''
+    from app.utils import retrieve
+
+    def _fail_if_called(*a, **kw):
+        raise AssertionError("groundedness_check should never run on a self-reported decline")
+
+    monkeypatch.setattr(retrieve.guardrails_agent, "check_groundedness", _fail_if_called)
+
+    state = {
+        "answer": retrieve.NO_ANSWER_IN_CONTEXT_TEXT, "context": "some unrelated context",
+        "request_id": None,
+    }
+    result = retrieve.validate_output_node(state)
+    groundedness_event = next(e for e in result["guardrail_events"] if e["stage"] == "groundedness_check")
+    assert groundedness_event["passed"] is True
+    assert groundedness_event["score"] is None
+
+
+def test_validate_output_node_still_checks_groundedness_on_a_real_answer(monkeypatch):
+    from app.utils import retrieve
+
+    calls = []
+    monkeypatch.setattr(
+        retrieve.guardrails_agent, "check_groundedness",
+        lambda answer, context, embedding_model: (calls.append(True), {"stage": "groundedness_check", "passed": True, "reason": None, "score": 0.9})[1],
+    )
+
+    state = {"answer": "the warranty lasts 12 months", "context": "warranty terms...", "request_id": None}
+    retrieve.validate_output_node(state)
+    assert calls == [True]
+
+
 def test_quota_blocks_over_cap():
     event = validate_quota(tokens_used_today=999_999_999, daily_quota=1000)
     assert event["passed"] is False

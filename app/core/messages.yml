@@ -28,6 +28,9 @@ input_validation:
 documents_check:
   no_documents: "Looks like you haven't uploaded any documents yet - head to the Data Ingestion tab to add one, then come back and ask away."
 
+chat_source_check:
+  no_sources: "I haven't got anything to answer from yet - upload a document or connect a database first, then come back and ask away."
+
 quota_check:
   exceeded: "You've reached your daily question limit for today ({used}/{quota} tokens used). It resets tomorrow, or an admin can raise your limit if you need more room sooner."
 
