@@ -28,7 +28,10 @@ def test_user_blocked_once_daily_quota_exhausted(client, admin_headers, user_hea
     body = parse_sse_response(resp)
     assert resp.status_code == 200  # quota block is a normal chat response, not an HTTP error
     assert body["message"] == "Request blocked by quota"
-    events = body["graph_response"]["guardrail_events"]
+    # Quota is now checked once at the top of _generate_chat_response (Tier 1, before
+    # the Supervisor's own routing decision exists) - a block here is a flat response,
+    # not wrapped in graph_response.
+    events = body["guardrail_events"]
     quota_event = next(e for e in events if e["stage"] == "quota_check")
     assert quota_event["passed"] is False
 

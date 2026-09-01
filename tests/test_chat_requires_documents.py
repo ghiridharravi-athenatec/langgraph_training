@@ -7,25 +7,28 @@ def _fail_if_classify_intent_is_called(self, question):
 
 def test_chat_blocked_when_caller_has_no_documents(client, admin_headers, monkeypatch):
     '''Proves the guardrail short-circuits before the expensive intent-classification
-    call, not just that the final response looks blocked.'''
+    call, not just that the final response looks blocked. With no documents and no
+    database connected, the top-level "nothing grounded to answer from" gate
+    (chat_source_check) blocks the turn before the Supervisor's own routing decision
+    even exists - document_chat's own documents_check never gets a chance to run.'''
     monkeypatch.setattr("app.api.v1.api.IntentClassifier.classify_intent", _fail_if_classify_intent_is_called)
 
     resp = client.post("/api/v1/chat", json={"question": "what is the warranty period"}, headers=admin_headers)
     assert resp.status_code == 200  # a guardrail block is a normal chat response, not an HTTP error
     body = parse_sse_response(resp)
-    assert body["message"] == "Request blocked by knowledge base check"
-    events = body["graph_response"]["guardrail_events"]
-    documents_event = next(e for e in events if e["stage"] == "documents_check")
-    assert documents_event["passed"] is False
+    assert body["message"] == "Request blocked by source availability check"
+    events = body["guardrail_events"]
+    source_check_event = next(e for e in events if e["stage"] == "chat_source_check")
+    assert source_check_event["passed"] is False
 
 
 def test_chat_blocked_even_for_a_greeting_when_no_documents(client, admin_headers, monkeypatch):
-    '''The knowledge base guardrail runs before intent classification, so even a
+    '''The source-availability guardrail runs before intent classification, so even a
     harmless "hi" is blocked - there's nothing for chat to do at all yet.'''
     monkeypatch.setattr("app.api.v1.api.IntentClassifier.classify_intent", _fail_if_classify_intent_is_called)
 
     resp = client.post("/api/v1/chat", json={"question": "hello there"}, headers=admin_headers)
-    assert parse_sse_response(resp)["message"] == "Request blocked by knowledge base check"
+    assert parse_sse_response(resp)["message"] == "Request blocked by source availability check"
 
 
 def test_admin_gets_no_exemption_from_the_documents_check(client, admin_headers, monkeypatch):
@@ -34,7 +37,7 @@ def test_admin_gets_no_exemption_from_the_documents_check(client, admin_headers,
     monkeypatch.setattr("app.api.v1.api.IntentClassifier.classify_intent", _fail_if_classify_intent_is_called)
 
     resp = client.post("/api/v1/chat", json={"question": "hello there"}, headers=admin_headers)
-    assert parse_sse_response(resp)["message"] == "Request blocked by knowledge base check"
+    assert parse_sse_response(resp)["message"] == "Request blocked by source availability check"
 
 
 def test_chat_proceeds_once_caller_has_ingested_a_document(client, admin_headers, admin_id, monkeypatch):

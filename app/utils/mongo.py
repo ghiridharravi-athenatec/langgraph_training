@@ -245,6 +245,20 @@ def rename_project_if_still_default(
     return result.modified_count > 0
 
 
+def disable_project(project_id: str, db_name: str = DB_NAME) -> bool:
+    '''One-time retirement for a project that's been removed from the codebase (see
+    app/core/bootstrap.py) but may already have been seeded into an existing database -
+    GET /projects already filters on enabled: True for everyone including admins, so
+    this alone removes it from the Dashboard without deleting its conversation history.
+    Returns whether it actually disabled anything (a no-op on a fresh install that never
+    seeded this project at all).'''
+    result = get_projects_collection(db_name).update_one(
+        {"_id": project_id, "enabled": True},
+        {"$set": {"enabled": False, "updated_at": _now()}},
+    )
+    return result.modified_count > 0
+
+
 def get_project(project_id: str, db_name: str = DB_NAME) -> Optional[Dict[str, Any]]:
     return get_projects_collection(db_name).find_one({"_id": project_id})
 

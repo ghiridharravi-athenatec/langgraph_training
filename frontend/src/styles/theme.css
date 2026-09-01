@@ -2717,6 +2717,31 @@ button:disabled {
   margin-top: 7px;
 }
 
+/* Shows the Supervisor's Document-vs-Database choice as an actual fork in the
+   simple overview diagram, instead of hard-coding a single always-Document path
+   that no longer matches what the Supervisor can actually decide. */
+.agentic-fork {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  width: 100%;
+  flex-wrap: wrap;
+}
+
+.agentic-fork .agentic-card {
+  max-width: 240px;
+}
+
+.agentic-fork-or {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 /* Small context label above a card that appears more than once in the chain
    (the Guardrails Agent, before and after the Document Agent) - says which
    pass this instance is, without a second, separately-worded card. */
@@ -3780,6 +3805,34 @@ button:disabled {
 .chat-logs-toggle:hover {
   color: var(--accent);
   text-decoration: underline;
+}
+
+.chat-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 6px;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1;
+  padding: 3px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.chat-message-assistant .chat-copy-btn {
+  margin-left: 10px;
+}
+
+.chat-copy-btn:hover {
+  color: var(--accent);
+  background: var(--bg-alt);
+}
+
+.chat-copy-btn-copied {
+  color: var(--success);
 }
 
 .guardrail-badge {

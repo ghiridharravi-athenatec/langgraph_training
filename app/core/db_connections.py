@@ -283,7 +283,12 @@ def _sql_run_query(details: Dict[str, Any], sql: str) -> Dict[str, Any]:
             # string matching.
             if details["engine"] == "postgresql":
                 connection = connection.execution_options(postgresql_readonly=True)
-            result = connection.exec_driver_sql(sql)
+            # Explicit empty tuple, not the default None - with None, SQLAlchemy 2.x
+            # substitutes an empty immutabledict as "parameters" for some dialects
+            # (observed with mssql+pyodbc), and pyodbc's cursor.execute() rejects a
+            # mapping there ("... is not a sequence") since it expects a sequence or
+            # nothing at all. An explicit empty sequence sidesteps that entirely.
+            result = connection.exec_driver_sql(sql, ())
             columns = list(result.keys())
             rows = []
             for i, row in enumerate(result):
@@ -295,6 +300,18 @@ def _sql_run_query(details: Dict[str, Any], sql: str) -> Dict[str, Any]:
     try:
         return _run_with_timeout(_execute, config.DB_QUERY_TIMEOUT_SECONDS)
     except SQLAlchemyError as e:
+        raise ConnectionError_(f"Query failed: {e}") from e
+    except Exception as e:
+        # Broader than SQLAlchemyError on purpose: some DBAPI-level failures (observed
+        # with pyodbc - e.g. a literal "?" in the generated SQL text getting scanned as
+        # a bind-parameter marker by the ODBC driver's prepare step, which happens
+        # unconditionally for every execute() call regardless of whether real
+        # parameters are supplied) surface as a bare IndexError/TypeError, not a
+        # SQLAlchemyError subclass - SQLAlchemy re-raises those verbatim instead of
+        # wrapping them. Left uncaught here, that exception would crash the whole
+        # agent loop (see run_db_agent's Claude->Gemini fallback) instead of becoming
+        # a recoverable tool result the agent can see, explain, and retry past.
+        logger.warning("Unexpected error executing generated SQL: %s", e)
         raise ConnectionError_(f"Query failed: {e}") from e
 
 

@@ -117,6 +117,44 @@ function GuardrailTableRow({ item, events }) {
       ),
     });
   }
+  if (result.route) {
+    detailFields.push({
+      label: "Routed to",
+      node: (
+        <span className={`guardrail-badge ${result.fallbackUsed ? "guardrail-badge-warn" : "guardrail-badge-pii"}`}>
+          {result.route}
+          {result.fallbackUsed ? " (fallback)" : ""}
+        </span>
+      ),
+    });
+    if (result.availableRoutes?.length > 1) {
+      detailFields.push({ label: "Available routes", node: <span className="guardrail-badge">{result.availableRoutes.join(", ")}</span> });
+    }
+    if (result.sourceFallbackUsed) {
+      detailFields.push({
+        label: "Source fallback",
+        node: (
+          <span className="guardrail-badge guardrail-badge-warn">
+            {result.sourceFallbackFrom} came back empty - retried the other source
+          </span>
+        ),
+      });
+    }
+    if (result.modelTier) {
+      detailFields.push({ label: "Model tier picked", node: <span className="guardrail-badge guardrail-badge-pii">{result.modelTier}</span> });
+    }
+  }
+  if (result.tier3Skip !== undefined) {
+    detailFields.push({
+      label: "Skipped checks",
+      node:
+        result.tier3Skip.length > 0 ? (
+          <span className="guardrail-badge guardrail-badge-warn">{result.tier3Skip.join(", ")}</span>
+        ) : (
+          <span className="guardrail-badge guardrail-badge-pii">None</span>
+        ),
+    });
+  }
   if (typeof result.checkedCount === "number") {
     detailFields.push({
       label: "Checked",

@@ -101,10 +101,15 @@ const PIPELINE_SHARED_TOP = [
 
 const PIPELINE_DOC_BRANCH = [
   {
-    title: "Knowledge base check",
-    desc: "Blocks the entire turn, including greetings, if this user hasn't ingested any documents of their own yet",
+    title: "Source availability check",
+    desc: "Blocks the entire turn if this user has neither ingested a document nor connected a database - there is deliberately no general-knowledge fallback, so with nothing grounded to answer from, the turn is blocked rather than answered from the model's own knowledge",
     gate: true,
     owner: "guardrails",
+  },
+  {
+    title: "Supervisor routing",
+    desc: "Decides whether this turn is answered from documents, the connected database, or both (only when the question genuinely needs each) - picked from a closed set already filtered to what this user can access, never a \"general knowledge\" option. If the model picker is set to \"Auto\", this same call also picks a model tier (Haiku/Sonnet/Opus) by question complexity. Skipped entirely, with no LLM call spent, when only one source is available",
+    owner: "orchestrator",
   },
   {
     title: "Classify intent",
@@ -165,6 +170,11 @@ const PIPELINE_DOC_BRANCH = [
     gate: true,
     owner: "guardrails",
   },
+  {
+    title: "Retry with a different search",
+    desc: "If the answer is a genuine \"I don't know\" (nothing relevant found), the Document Agent can rewrite the search query and try again once before giving up - never an open-ended loop",
+    owner: "document",
+  },
 ];
 
 const PIPELINE_DB_BRANCH = [
@@ -207,12 +217,12 @@ const AGENT_OVERVIEW = {
   orchestrator: {
     title: "Supervisor Agent",
     role: "Coordinates every agent below",
-    desc: "Calls the Guardrails Agent, then the right task agent, then the Guardrails Agent again - same fixed order, every turn.",
+    desc: "Decides whether your documents, your connected database, or both answers this turn - never general knowledge - and, on \"Auto\", which model tier fits the question. If the chosen source comes back empty, it automatically tries the other one. Calls Guardrails, then whichever task agent(s) it picked, then Guardrails again - same fixed order, every turn.",
   },
   guardrails: {
-    title: "Guardrails Agent",
+    title: "Guardrails",
     role: "Deterministic reviewer",
-    desc: "Reviews every question before a task agent sees it, and reviews every answer before you do. Same checks, every turn, both chatbots.",
+    desc: "Reviews every question before a task agent sees it, and reviews every answer before you do. Same checks, every turn, both entry points.",
   },
   document: {
     title: "Document Agent",
@@ -221,8 +231,8 @@ const AGENT_OVERVIEW = {
   },
   database: {
     title: "Database Agent",
-    role: "Genuinely agentic",
-    desc: "The one autonomous piece here - decides its own next step against your connected database, read-only.",
+    role: "Tool-calling agent",
+    desc: "Determines its own next step against your connected database, read-only - the only component here that decides its own execution path.",
   },
 };
 
@@ -260,15 +270,22 @@ function AgenticOverviewDiagram() {
     <div className="agentic-diagram">
       <AgenticActor label="You" desc="Ask a question" />
       <AgenticArrow />
-      <AgenticCard owner="orchestrator" />
+      <AgenticCard
+        owner="orchestrator"
+        desc="Decides which of the two agents below (or both) answers this turn - skipped, with no LLM call spent, when only one source is available."
+      />
       <AgenticArrow />
       <AgenticCard
         owner="guardrails"
         pill="Checks your question"
-        desc="Reviews your question before the Document Agent ever sees it - length, injection attempts, blocked keywords, PII."
+        desc="Reviews your question before either task agent sees it - length, injection attempts, blocked keywords, PII."
       />
       <AgenticArrow />
-      <AgenticCard owner="document" />
+      <div className="agentic-fork">
+        <AgenticCard owner="document" />
+        <span className="agentic-fork-or">or</span>
+        <AgenticCard owner="database" />
+      </div>
       <AgenticArrow />
       <AgenticCard
         owner="guardrails"
@@ -288,17 +305,17 @@ function AgenticOverviewDiagram() {
 // ---------------------------------------------------------------------------
 
 const OWNER_LABELS = {
-  guardrails: "Guardrails Agent",
+  guardrails: "Guardrails",
   document: "Document Agent",
   database: "Database Agent",
   orchestrator: "Supervisor Agent",
 };
 
 const OWNER_LEGEND = [
-  { key: "guardrails", desc: "Deterministic reviewer - runs every guardrail check, on every turn, for both chatbots" },
+  { key: "guardrails", desc: "Deterministic reviewer - runs every guardrail check, on every turn, both entry points" },
   { key: "document", desc: "Task-performing - fixed retrieve-then-generate pipeline, not autonomous" },
-  { key: "database", desc: "Genuinely agentic - decides its own next tool call, the only autonomous piece here" },
-  { key: "orchestrator", desc: "Coordinates the request - calls the Guardrails Agent, then the right task agent, then the Guardrails Agent again" },
+  { key: "database", desc: "Tool-calling agent - decides its own next tool call, the only component here that determines its own execution path" },
+  { key: "orchestrator", desc: "Decides whether documents, the database, or both answer this turn, never general knowledge - calls Guardrails, then the right task agent(s), then Guardrails again" },
 ];
 
 function PipelineNode({ node }) {
@@ -402,21 +419,31 @@ function PipelineDiagram() {
     <div className="pipeline-diagram">
       <PipelineRow nodes={PIPELINE_SHARED_TOP} />
 
-      <PipelineArrow label="branches by which chatbot you're using" />
+      <PipelineArrow label="both surfaces share Tier 1, then split" />
 
       <div className="pipeline-branch-row">
         <div className="pipeline-branch">
-          <span className="pipeline-branch-header">Conversational Intelligence</span>
+          <span className="pipeline-branch-header">Conversational Intelligence - documents</span>
           <PipelineColumn nodes={PIPELINE_DOC_BRANCH} />
+          <p className="pipeline-branch-note">
+            If the Supervisor routes to the database instead, the rest of this turn runs the exact same
+            steps as the Database Agent branch shown alongside - one shared implementation, reused by
+            both entry points, not two that can drift apart. If this source still comes back empty even
+            after retrying, the Supervisor automatically tries the other available source once before
+            finalizing the answer.
+          </p>
         </div>
         <div className="pipeline-branch">
           <span className="pipeline-branch-header">Database Agent</span>
           <PipelineColumn nodes={PIPELINE_DB_BRANCH} />
           <p className="pipeline-branch-note">
-            Deliberately thinner than the document path - there's no retrieval, cache, or groundedness
-            check to run, since a query either returns real rows or nothing. The Database Agent is also
-            the only genuinely autonomous piece of this app - it decides its own next tool call, rather
-            than following one fixed path like the Document Agent does.
+            Reached two ways: routed here by Conversational Intelligence's Supervisor, or directly from
+            the standalone Database Agent page - which skips the source-availability check and Supervisor
+            routing entirely, since a specific connection is already chosen there. Deliberately thinner
+            than the document path either way - there's no retrieval, cache, or groundedness check to
+            run, since a query either returns real rows or nothing. This is also the only tool-calling
+            agent in this app - it decides its own next tool call, rather than following one fixed path
+            like the Document Agent does.
           </p>
         </div>
       </div>
@@ -645,10 +672,12 @@ export default function Instructions() {
 
         {activeTab === "pipeline" && (
           <div className="ingest-card">
-            <h3>Architecture: three agents, working together</h3>
+            <h3>Architecture: one Supervisor, two task agents, always reviewed by Guardrails</h3>
             <p className="gr-field-hint">
-              A Supervisor Agent routes your question. A Guardrails Agent reviews it going in and the
-              answer coming back out, every time. In between, the Document Agent does the actual work.
+              A Supervisor Agent decides whether your documents, your connected database, or both answer
+              this turn - never general knowledge. Guardrails reviews it going in and the answer coming
+              back out, every time. In between, the Document Agent, the Database Agent, or both do the
+              actual work.
             </p>
             <AgenticOverviewDiagram />
 
@@ -680,9 +709,10 @@ export default function Instructions() {
 
                 <h4 className="pipeline-subheading">Then, every chat turn</h4>
                 <p className="gr-field-hint">
-                  Every box below is also labeled with the actor that owns it. A single Guardrails Agent
-                  runs every check, on both chatbots; the document and database flows are task-performing
-                  agents that call into it and never decide a guardrail outcome themselves.
+                  Every box below is also labeled with the actor that owns it. A single Guardrails
+                  reviewer runs every check, on both entry points; the document and database flows are
+                  task-performing agents that call into it and never decide a guardrail outcome
+                  themselves.
                 </p>
                 <PipelineLegend />
                 <PipelineDiagram />

@@ -68,6 +68,7 @@ def build_conversations_router(project_id: str, prefix: str) -> APIRouter:
                 guardrail_events=m.get("guardrail_events"),
                 created_at=m["created_at"],
                 turn_id=m.get("turn_id"),
+                routed_to=m.get("routed_to"),
             )
             for m in list_messages(conversation_id)
         ]

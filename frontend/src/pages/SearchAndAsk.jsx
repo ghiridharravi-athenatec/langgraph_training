@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 import api, { formatErrorDetail, streamChat } from "../api/client";
 import GuardrailPanel from "../components/GuardrailPanel";
 import Modal from "../components/Modal";
+import CopyButton from "../components/CopyButton";
 import ModelPicker from "../components/ModelPicker";
 import ThemeToggle from "../components/ThemeToggle";
 import ThinkingIndicator from "../components/ThinkingIndicator";
@@ -18,10 +19,10 @@ import { SEARCH_ASK_GUARDRAIL_CHECKLIST } from "../data/guardrailChecklist";
 // stages actually fire in (see app/api/v1/search_ask.py), so the fallback and
 // the live version read the same.
 const THINKING_MESSAGES = [
-  "Guardrails Agent: validating your question…",
-  "Guardrails Agent: checking your quota…",
+  "Guardrails: validating your question…",
+  "Guardrails: checking your quota…",
   "Search & Ask: drafting an answer…",
-  "Guardrails Agent: checking the answer…",
+  "Guardrails: checking the answer…",
 ];
 
 const SUGGESTED_PROMPTS = [
@@ -43,7 +44,7 @@ export default function SearchAndAsk() {
   const [liveStage, setLiveStage] = useState("");
   const [openLogsIndex, setOpenLogsIndex] = useState(null);
 
-  const [selectedModel, setSelectedModel] = useState("sonnet");
+  const [selectedModel, setSelectedModel] = useState("auto");
 
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [documents, setDocuments] = useState([]);
@@ -322,6 +323,7 @@ export default function SearchAndAsk() {
                     <p>{msg.content}</p>
                   )}
                 </div>
+                {msg.role === "user" && <CopyButton text={msg.content} label="Copy question" />}
                 {msg.role === "assistant" && msg.response_time_ms != null && (
                   <span className="chat-response-time" title="Time to generate this answer">
                     {formatResponseTime(msg.response_time_ms)}
@@ -331,6 +333,9 @@ export default function SearchAndAsk() {
                   <button className="chat-logs-toggle" onClick={() => setOpenLogsIndex(openLogsIndex === i ? null : i)}>
                     {openLogsIndex === i ? "Hide guardrail checks" : "View guardrail checks"}
                   </button>
+                )}
+                {msg.role === "assistant" && !msg.streaming && (
+                  <CopyButton text={formatPiiTokens(msg.content)} />
                 )}
                 {openLogsIndex === i && (
                   <GuardrailPanel logs={msg.logs} events={msg.guardrail_events} checklist={SEARCH_ASK_GUARDRAIL_CHECKLIST} />

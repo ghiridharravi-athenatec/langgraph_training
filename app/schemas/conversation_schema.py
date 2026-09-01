@@ -35,3 +35,6 @@ class MessageOut(BaseModel):
     # question this answered, i.e. the same id TraceTurnOut.id uses for this turn.
     # Powers the chat screen's "View Trace" link (GET /traces/turns/{turn_id}).
     turn_id: Optional[str] = None
+    # Only set on the unified Assistant project (app/api/v1/assistant.py) - which
+    # task agent the Supervisor routed this turn to.
+    routed_to: Optional[str] = None

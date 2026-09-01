@@ -5,6 +5,9 @@ import remarkGfm from "remark-gfm";
 import api, { formatErrorDetail, streamChat } from "../api/client";
 import GuardrailPanel from "../components/GuardrailPanel";
 import DocumentsPanel from "../components/DocumentsPanel";
+import IngestPanel from "../components/IngestPanel";
+import DatabaseIngestPanel from "../components/DatabaseIngestPanel";
+import CopyButton from "../components/CopyButton";
 import ModelPicker from "../components/ModelPicker";
 import ThemeToggle from "../components/ThemeToggle";
 import ThinkingIndicator from "../components/ThinkingIndicator";
@@ -14,51 +17,43 @@ import { formatResponseTime } from "../utils/formatResponseTime";
 import { formatPiiTokens } from "../utils/formatPii";
 import { resolveBlockedGuardrailLabel } from "../data/guardrailChecklist";
 
-const SECTIONS = [
-  { id: "chat", label: "Chat", icon: "◧" },
-  { id: "ingest", label: "Data Ingestion", icon: "▤" },
-  { id: "documents", label: "Documents", icon: "▦" },
-  { id: "tracing", label: "Tracing", icon: "≋" },
-];
-
 // Fallback cycling text only - shown before the first live stage arrives (or if
 // polling never succeeds at all). Kept in the same order the real pipeline
 // stages actually fire in, so the fallback and the live version read the same.
 const THINKING_MESSAGES = [
-  "Guardrails Agent: validating your question…",
-  "Guardrails Agent: checking access & quota…",
+  "Guardrails: validating your question…",
+  "Guardrails: checking your quota…",
+  "Supervisor Agent: deciding how to answer…",
+  "Supervisor Agent: picked Sonnet for this question…",
   "Document Agent: classifying your question…",
   "Document Agent: searching your documents…",
-  "Guardrails Agent: checking retrieval relevance…",
+  "Guardrails: checking retrieval relevance…",
   "Document Agent: drafting an answer…",
-  "Guardrails Agent: reviewing bias…",
-  "Guardrails Agent: checking groundedness & output…",
+  "Guardrails: reviewing bias…",
+  "Guardrails: checking groundedness & output…",
+  "Document Agent: trying a different search…",
+  "Document Agent: searching your documents again…",
 ];
 
-// Human-readable labels for the entity type names GET /ingest/pii-options returns -
-// same catalog as PII_ENTITY_OPTIONS on the Guardrails page, kept separate since
-// this component doesn't import from Traces.jsx.
 const SUGGESTED_PROMPTS = [
   "Summarize what's in this document",
   "What are the key numbers or figures mentioned?",
   "List any dates or deadlines referenced",
 ];
 
-const PII_ENTITY_LABELS = {
-  EMAIL_ADDRESS: "Email address",
-  PHONE_NUMBER: "Phone number",
-  CREDIT_CARD: "Credit card",
-  US_SSN: "SSN",
-  US_BANK_NUMBER: "Bank account number",
-  US_DRIVER_LICENSE: "Driver's license",
-  US_PASSPORT: "Passport number",
-  IBAN_CODE: "IBAN",
-  IP_ADDRESS: "IP address",
-  CRYPTO: "Crypto wallet address",
-  PERSON: "Person name",
-  LOCATION: "Location",
-  NRP: "Nationality / religious / political group",
-  MEDICAL_LICENSE: "Medical license",
+// Which project grant unlocks the Database Connections section - same grant
+// app/core/orchestrator.py's filter_routes_by_permission already requires before it
+// will route a chat turn to database_chat, so this only mirrors an access requirement
+// that already exists rather than introducing a new one.
+const DATABASE_SECTION_PROJECT_ID = "database-chatbot";
+
+// Human-readable labels for the route names app/core/orchestrator.py's ALL_ROUTES
+// produces - shown as a small badge on each answer so the Supervisor's routing
+// decision is visible, not a hidden implementation detail.
+const ROUTE_LABELS = {
+  document_chat: "Answered from your documents",
+  database_chat: "Answered from your database",
+  both: "Answered from your documents & database",
 };
 
 export default function RagChatbot() {
@@ -77,15 +72,26 @@ export default function RagChatbot() {
   const [openLogsIndex, setOpenLogsIndex] = useState(null);
   const [pendingTraceTurnId, setPendingTraceTurnId] = useState(null);
 
-  const [file, setFile] = useState(null);
-  const [ingestStatus, setIngestStatus] = useState(null);
-  const [ingesting, setIngesting] = useState(false);
-  const [piiOptions, setPiiOptions] = useState([]);
-  const [selectedPiiEntities, setSelectedPiiEntities] = useState([]);
-
-  const [selectedModel, setSelectedModel] = useState("sonnet");
+  const [selectedModel, setSelectedModel] = useState("auto");
 
   const [hasDocuments, setHasDocuments] = useState(null); // null = not checked yet, so the banner never flashes
+  const [projectIds, setProjectIds] = useState([]);
+  const [hasConnections, setHasConnections] = useState(null);
+
+  const canManageConnections = projectIds.includes(DATABASE_SECTION_PROJECT_ID);
+  // Combined "has anything grounded to answer from" - mirrors the exact same
+  // has_documents/database_chat availability check _generate_chat_response
+  // (app/api/v1/api.py) runs before the Supervisor ever gets to decide.
+  const hasAnySource = hasDocuments === null && hasConnections === null
+    ? null
+    : Boolean(hasDocuments) || Boolean(canManageConnections && hasConnections);
+  const sections = [
+    { id: "chat", label: "Chat", icon: "◧" },
+    { id: "ingest", label: "Data Ingestion", icon: "▤" },
+    { id: "documents", label: "Documents", icon: "▦" },
+    canManageConnections && { id: "connections", label: "Database Connections", icon: "⛁" },
+    { id: "tracing", label: "Tracing", icon: "≋" },
+  ].filter(Boolean);
 
   const scrollRef = useRef(null);
   // Guards handleSend against double-submission (fast double-click/double-Enter
@@ -105,23 +111,14 @@ export default function RagChatbot() {
     // of silently reopening whatever conversation was last active.
     loadConversations();
     checkDocumentsStatus();
-    loadPiiOptions();
+    loadProjects();
   }, []);
 
-  async function loadPiiOptions() {
-    try {
-      const { data } = await api.get("/ingest/pii-options");
-      const options = data.available_entities.map((value) => ({
-        value,
-        label: PII_ENTITY_LABELS[value] || value,
-      }));
-      setPiiOptions(options);
-      setSelectedPiiEntities(data.default_entities || []);
-    } catch {
-      // Non-critical - the checklist just won't be editable this session; the
-      // backend still falls back to its own default entity list on upload.
-    }
-  }
+  useEffect(() => {
+    // Only fetch connection status once we know the user actually holds the
+    // database-chatbot grant - otherwise GET /database/connections just 403s.
+    if (canManageConnections) loadConnections();
+  }, [canManageConnections]);
 
   async function checkDocumentsStatus() {
     try {
@@ -130,6 +127,29 @@ export default function RagChatbot() {
     } catch {
       // Non-critical - worst case the disclaimer just doesn't show for this session.
     }
+  }
+
+  async function loadProjects() {
+    try {
+      const { data } = await api.get("/projects");
+      setProjectIds(data.map((p) => p.id));
+    } catch {
+      // Non-critical - the Database Connections section just won't show for this
+      // session; Chat/Data Ingestion/Documents/Tracing are unaffected.
+    }
+  }
+
+  async function loadConnections() {
+    try {
+      const { data } = await api.get("/database/connections");
+      handleConnectionsChanged(data);
+    } catch {
+      // Non-critical - worst case the disclaimer just doesn't show for this session.
+    }
+  }
+
+  function handleConnectionsChanged(data) {
+    setHasConnections(data.length > 0);
   }
 
   async function loadConversations({ selectFirst = false } = {}) {
@@ -159,9 +179,11 @@ export default function RagChatbot() {
           content: m.content,
           logs: m.logs,
           graph_response: m.graph_response,
+          guardrail_events: m.guardrail_events,
           cached: m.cached,
           response_time_ms: m.response_time_ms,
           turn_id: m.turn_id,
+          routed_to: m.routed_to,
         }))
       );
     } catch {
@@ -257,9 +279,11 @@ export default function RagChatbot() {
         content: data.answer || "No answer received.",
         logs: data.logs,
         graph_response: data.graph_response,
+        guardrail_events: data.guardrail_events,
         cached: data.graph_response?.guardrail_events?.some((ev) => ev.stage === "semantic_cache" && ev.cache_hit),
         response_time_ms: data.response_time_ms,
         turn_id: data.turn_id,
+        routed_to: data.routed_to,
       };
       setMessages((prev) => {
         if (!streamStarted) return [...prev, finalMessage];
@@ -283,26 +307,6 @@ export default function RagChatbot() {
     }
   }
 
-  async function handleIngest(e) {
-    e.preventDefault();
-    if (!file) return;
-    setIngesting(true);
-    setIngestStatus(null);
-    try {
-      const form = new FormData();
-      form.append("file", file);
-      form.append("pii_entities", JSON.stringify(selectedPiiEntities));
-      const { data } = await api.post("/ingest", form);
-      setIngestStatus({ ok: true, message: `Ingested '${file.name}'.`, guardrails: data.guardrails });
-      setFile(null);
-      checkDocumentsStatus();
-    } catch (err) {
-      setIngestStatus({ ok: false, message: formatErrorDetail(err, "Ingestion failed.") });
-    } finally {
-      setIngesting(false);
-    }
-  }
-
   return (
     <div className="chat-shell">
       <div className="chat-nav-spacer" aria-hidden="true" />
@@ -318,7 +322,7 @@ export default function RagChatbot() {
         </div>
 
         <nav className="chat-nav-list">
-          {SECTIONS.map((s) => (
+          {sections.map((s) => (
             <button
               key={s.id}
               type="button"
@@ -379,26 +383,32 @@ export default function RagChatbot() {
             <div className="chat-main">
               <div className="chat-scroll" ref={scrollRef}>
                 <div className="chat-column">
-                  {hasDocuments === false && (
+                  {hasAnySource === false && (
                     <div className="chat-disclaimer">
                       <span className="chat-disclaimer-icon">◧</span>
                       <span>
-                        You haven't ingested any documents yet — answers won't have anything to draw on. Upload one
-                        from the <strong>Data Ingestion</strong> tab first.
+                        You haven't ingested any documents{canManageConnections ? " or connected a database" : ""} yet
+                        — answers won't have anything to draw on. Upload one from the <strong>Data Ingestion</strong> tab
+                        {canManageConnections ? (
+                          <>
+                            {" "}or connect one from the <strong>Database Connections</strong> tab
+                          </>
+                        ) : null} first.
                       </span>
                     </div>
                   )}
 
                   {messages.length === 0 && (
                     <div className="chat-welcome chat-welcome-document">
-                      <span className="chat-welcome-eyebrow">Document chat</span>
+                      <span className="chat-welcome-eyebrow">Conversational Intelligence</span>
                       <div className="chat-welcome-icon">▤</div>
-                      <h2>Ask a question about your documents</h2>
+                      <h2>Ask a question about your documents or database</h2>
                       <p className="chat-welcome-body">
-                        Answers are grounded only in what you've ingested — every response runs through PII
-                        masking, relevance, and groundedness checks before it reaches you.
+                        A Supervisor decides which grounded source actually answers - only your own documents or
+                        connected database, never the model's own general knowledge. Every response still runs
+                        through PII masking, relevance, and groundedness checks before it reaches you.
                       </p>
-                      {hasDocuments !== false && (
+                      {hasAnySource !== false && (
                         <div className="chat-welcome-prompts">
                           {SUGGESTED_PROMPTS.map((p) => (
                             <button
@@ -426,6 +436,7 @@ export default function RagChatbot() {
                           <p>{msg.content}</p>
                         )}
                       </div>
+                      {msg.role === "user" && <CopyButton text={msg.content} label="Copy question" />}
                       {/* {msg.role === "assistant" && msg.cached && (
                         <span className="cache-indicator">↺ Reused from a similar question</span>
                       )}
@@ -434,13 +445,18 @@ export default function RagChatbot() {
                           {openLogsIndex === i ? "Hide logs" : "View logs"}
                         </button>
                       )} */}
+                      {msg.role === "assistant" && msg.routed_to && (
+                        <span className="chat-response-time" title="Which source the Supervisor routed this question to">
+                          {ROUTE_LABELS[msg.routed_to] || msg.routed_to}
+                        </span>
+                      )}
                       {msg.role === "assistant" && msg.response_time_ms != null && (
                         <span className="chat-response-time" title="Time to generate this answer">
                           {formatResponseTime(msg.response_time_ms)}
                         </span>
                       )}
                       {msg.role === "assistant" && (() => {
-                        const blockedLabel = resolveBlockedGuardrailLabel(msg.graph_response?.guardrail_events);
+                        const blockedLabel = resolveBlockedGuardrailLabel(msg.graph_response?.guardrail_events || msg.guardrail_events);
                         return blockedLabel && <span className="turn-blocked-badge">Blocked - {blockedLabel}</span>;
                       })()}
                       {isAdmin && msg.role === "assistant" && msg.turn_id && (
@@ -448,7 +464,12 @@ export default function RagChatbot() {
                           View Trace
                         </button>
                       )}
-                      {openLogsIndex === i && <GuardrailPanel logs={msg.logs} graphResponse={msg.graph_response} />}
+                      {msg.role === "assistant" && !msg.streaming && (
+                        <CopyButton text={formatPiiTokens(msg.content)} />
+                      )}
+                      {openLogsIndex === i && (
+                        <GuardrailPanel logs={msg.logs} graphResponse={msg.graph_response} events={msg.guardrail_events} />
+                      )}
                     </div>
                   ))}
 
@@ -468,13 +489,13 @@ export default function RagChatbot() {
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     placeholder={
-                      hasDocuments === false
-                        ? "Ingest a document before you can ask a question…"
-                        : "Ask a question about your documents…"
+                      hasAnySource === false
+                        ? "Ingest a document or connect a database before you can ask a question…"
+                        : "Ask a question about your documents or database…"
                     }
-                    disabled={sending || hasDocuments === false}
+                    disabled={sending || hasAnySource === false}
                   />
-                  <button type="submit" className="btn-primary" disabled={sending || hasDocuments === false || !input.trim()}>
+                  <button type="submit" className="btn-primary" disabled={sending || hasAnySource === false || !input.trim()}>
                     Send
                   </button>
                 </div>
@@ -483,81 +504,19 @@ export default function RagChatbot() {
           </div>
         )}
 
-        {activeSection === "ingest" && (
-          <div className="traces-page">
-            <div className="traces-page-header">
-              <h1>Data Ingestion</h1>
-              <p className="muted">Upload any document - PDF, XLSX, DOCX, or TXT. Only you can retrieve from what you upload.</p>
-            </div>
-
-            <div className="ingest-cards">
-              <div className="ingest-card sidebar-section">
-                <h3>Upload document</h3>
-                <form onSubmit={handleIngest} className="sidebar-form">
-                  <input
-                    type="file"
-                    accept=".pdf,.xlsx,.docx,.txt"
-                    onChange={(e) => setFile(e.target.files?.[0] || null)}
-                  />
-
-                  {piiOptions.length > 0 && (
-                    <div className="gr-field">
-                      <span className="field-label">PII to mask before storing</span>
-                      <div className="gr-checkboxes">
-                        {piiOptions.map((opt) => (
-                          <label key={opt.value} className="gr-checkbox-row">
-                            <input
-                              type="checkbox"
-                              checked={selectedPiiEntities.includes(opt.value)}
-                              disabled={ingesting}
-                              onChange={(e) =>
-                                setSelectedPiiEntities((prev) =>
-                                  e.target.checked ? [...prev, opt.value] : prev.filter((v) => v !== opt.value)
-                                )
-                              }
-                            />
-                            {opt.label}
-                          </label>
-                        ))}
-                      </div>
-                      <span className="gr-field-hint">
-                        Unchecked types are stored as-is. This choice only applies to this upload.
-                      </span>
-                    </div>
-                  )}
-
-                  <button type="submit" className="btn-secondary btn-block" disabled={!file || ingesting}>
-                    {ingesting ? "Ingesting…" : "Ingest document"}
-                  </button>
-                </form>
-                {ingestStatus && (
-                  <p className={ingestStatus.ok ? "sidebar-status-ok" : "sidebar-status-error"}>{ingestStatus.message}</p>
-                )}
-                {ingestStatus?.guardrails && (
-                  <div className="sidebar-guardrails">
-                    {["file_type", "file_size"].map((key) => {
-                      const check = ingestStatus.guardrails[key];
-                      if (!check) return null;
-                      return (
-                        <span key={key} className={`guardrail-badge ${check.passed ? "guardrail-badge-pii" : "guardrail-badge-warn"}`}>
-                          {check.passed ? "✓" : "✗"} {key.replace("_", " ")}
-                        </span>
-                      );
-                    })}
-                    {(ingestStatus.guardrails.pii_masking?.pii_detected?.length || 0) > 0 &&
-                      ingestStatus.guardrails.pii_masking.pii_detected.map((p) => (
-                        <span key={p.entity_type} className="guardrail-badge guardrail-badge-pii">
-                          PII masked: {p.entity_type} {p.count > 1 ? `×${p.count}` : ""}
-                        </span>
-                      ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
+        {activeSection === "ingest" && <IngestPanel onIngested={checkDocumentsStatus} />}
 
         {activeSection === "documents" && <DocumentsPanel />}
+
+        {activeSection === "connections" && canManageConnections && (
+          <div className="traces-page">
+            <div className="traces-page-header">
+              <h1>Database Connections</h1>
+              <p className="muted">Connect an external database - read-only, only you can query what you connect.</p>
+            </div>
+            <DatabaseIngestPanel onConnectionsChanged={handleConnectionsChanged} />
+          </div>
+        )}
 
         {activeSection === "tracing" && (
           <TracingTab

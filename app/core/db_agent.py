@@ -35,6 +35,13 @@ logger = get_logger(__name__)
 _anthropic_client = anthropic.Anthropic(api_key=config.CLAUDE_API_KEY) if config.CLAUDE_API_KEY else None
 _gemini_client = genai.Client(api_key=config.GEMINI_API_KEY) if config.GEMINI_API_KEY else None
 
+# answer_node's document-pipeline equivalent is app/utils/retrieve.py's
+# NO_ANSWER_IN_CONTEXT_TEXT - this is the same idea for the database agent: an exact,
+# fixed phrase (rather than the previous loose "say plainly that you don't know"
+# instruction) so a caller can deterministically detect a decline and, e.g., trigger a
+# cross-source fallback retry (see app/api/v1/api.py's _database_answer_was_ungrounded).
+DB_NO_ANSWER_TEXT = "I don't know based on the available data."
+
 SYSTEM_PROMPT = """You are a read-only database assistant. You answer questions about a
 connected {engine} database by calling the tools available to you.
 
@@ -54,6 +61,11 @@ Workflow:
 3. Call run_query to answer the question. Prefer a single well-targeted query.
 4. Once you have enough information, answer in plain language - don't just dump
    raw rows, summarize what they show.
+5. If nothing in this database's schema is relevant to the question, or your
+   queries return no useful data, return exactly: "{no_answer_text}"
+   Never answer from outside/general knowledge that isn't derived from what a tool
+   actually returned here - an answer must be grounded in this database's real data
+   or not given at all.
 
 If a query fails, read the error and try a corrected query rather than giving up
 immediately - but don't retry more than once or twice.
@@ -100,7 +112,10 @@ def _tool_specs(engine: str) -> List[Dict[str, Any]]:
         specs.append({
             "name": "run_query",
             "description": "Runs a single read-only SELECT query. INSERT/UPDATE/DELETE/DROP/ALTER and any "
-                            "other write or DDL statement will be rejected - only SELECT is allowed.",
+                            "other write or DDL statement will be rejected - only SELECT is allowed. Write it as a "
+                            "complete, self-contained statement with every value inlined as a literal - there is no "
+                            "way to supply separate bind parameters here, so never include a placeholder like ?, "
+                            ":name, or %s anywhere in the SQL, including inside string literals.",
             "properties": {"sql": {"type": "string", "description": "A single SELECT statement."}},
             "required": ["sql"],
         })
@@ -127,6 +142,13 @@ def _execute_tool(details: Dict[str, Any], tool_name: str, tool_input: Dict[str,
             return db_connections.run_query(details, sql=tool_input["sql"])
         return {"error": f"Unknown tool '{tool_name}'"}
     except db_connections.ConnectionError_ as e:
+        # Logged with the generated SQL (not returned to the model on top of what it
+        # already wrote) so a query-execution failure is diagnosable from the logs
+        # alone - db_connections.py's own exception handling is now broad enough that
+        # this is always a recoverable {"error": ...} tool result the agent loop can
+        # see and retry past, never an uncaught crash.
+        if tool_name == "run_query" and details.get("engine") != "mongodb":
+            logger.warning("run_query failed (%s) - sql=%r", e, tool_input.get("sql"))
         return {"error": str(e)}
     except (json.JSONDecodeError, KeyError) as e:
         return {"error": f"Invalid tool arguments: {e}"}
@@ -156,7 +178,7 @@ def _run_claude_loop(
 
     resolved_model = resolve_claude_model(model)
     tools = _claude_tools(details["engine"])
-    system = SYSTEM_PROMPT.format(engine=details["engine"])
+    system = SYSTEM_PROMPT.format(engine=details["engine"], no_answer_text=DB_NO_ANSWER_TEXT)
     # history is already {"role": "user"/"assistant", "content": str} pairs - the
     # same shape the Anthropic messages param expects, so it's usable as-is.
     messages = [*(history or []), {"role": "user", "content": question}]
@@ -240,7 +262,7 @@ def _run_gemini_loop(
     if _gemini_client is None:
         raise RuntimeError("GEMINI_API_KEY not configured")
 
-    system = SYSTEM_PROMPT.format(engine=details["engine"])
+    system = SYSTEM_PROMPT.format(engine=details["engine"], no_answer_text=DB_NO_ANSWER_TEXT)
     tool = _gemini_tool(details["engine"])
     chat = _gemini_client.chats.create(
         model=config.GEMINI_MODEL,

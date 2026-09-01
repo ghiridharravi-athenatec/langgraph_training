@@ -18,8 +18,8 @@ from typing import Any, AsyncGenerator, Dict
 
 from app.core.guardrails import simplify_pii_tokens
 
-_CHUNK_SIZE = 5  # characters per SSE delta - small enough to read as a typewriter reveal
-_CHUNK_DELAY_SECONDS = 0.03
+_CHUNK_SIZE = 15  # characters per SSE delta - small enough to read as a typewriter reveal
+_CHUNK_DELAY_SECONDS = 0.01
 
 
 async def stream_answer(response: Dict[str, Any]) -> AsyncGenerator[str, None]:

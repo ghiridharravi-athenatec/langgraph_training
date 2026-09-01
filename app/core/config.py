@@ -49,6 +49,10 @@ MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", "8000"))
 MIN_GROUNDEDNESS_SCORE = float(os.getenv("MIN_GROUNDEDNESS_SCORE", "0.35"))
 ALLOWED_URL_DOMAINS = [d.strip().lower() for d in os.getenv("ALLOWED_URL_DOMAINS", "").split(",") if d.strip()]
 REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "30"))
+# Total retrieval attempts allowed per document-chat turn (2 = one retry) - if the
+# model declines with the first retrieval's context, it can reformulate the search
+# query and try again, same cost-capping principle as DB_AGENT_MAX_TOOL_CALLS below.
+RAG_MAX_RETRIEVAL_HOPS = int(os.getenv("RAG_MAX_RETRIEVAL_HOPS", "2"))
 
 # --- Operational guardrails ---
 DAILY_TOKEN_QUOTA = int(os.getenv("DAILY_TOKEN_QUOTA", "50000"))

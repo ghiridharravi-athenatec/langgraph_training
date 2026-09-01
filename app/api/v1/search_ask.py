@@ -17,6 +17,7 @@ import time
 import uuid
 from datetime import date
 from pathlib import Path
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
@@ -106,16 +107,17 @@ def _persist_and_respond(
     }
 
 
-def _generate_search_ask_answer(question: str, history: list, model: str) -> dict:
-    '''One combined LLM call: judges prompt injection/self-harm/topic restriction/
-    escalation AND bias AND writes the actual answer, all in one JSON response - the
-    document chatbot spreads these across two calls (classify_intent, then the
-    answer-generation call) only because it also has retrieval to run in between;
-    there's nothing to run in between here. Returns {"answer", "guardrail_events",
-    "token_count", "logs"} - same shape retrieve.py's llm_invoke returns, so the
-    blocked-event handling below reads identically.'''
+def _generate_general_llm_call(question: str, history: list, model: str, tier3_skip: List[str]) -> dict:
+    '''Just the one combined LLM call - judges prompt injection/self-harm/topic
+    restriction/escalation AND bias AND writes the actual answer, all in one JSON
+    response (the document chatbot spreads these across two calls only because it also
+    has retrieval to run in between; there's nothing to run in between here). Returns
+    {"answer", "guardrail_events", "token_count", "logs"}.'''
     guardrail_instructions, guardrail_schema_fields = guardrails_agent.intent_guardrail_fragments(history)
-    bias_instructions, bias_schema_fields = guardrails_agent.bias_guardrail_fragments()
+    if "bias_detection" in tier3_skip:
+        bias_instructions, bias_schema_fields = "", ""
+    else:
+        bias_instructions, bias_schema_fields = guardrails_agent.bias_guardrail_fragments()
     history_block = _format_history(history)
     guardrail_schema_block = ",\n                    " + guardrail_schema_fields
 
@@ -181,6 +183,80 @@ def _generate_search_ask_answer(question: str, history: list, model: str) -> dic
     }
 
 
+def generate_general_answer(
+    question: str, current_user: dict, history: list, model: str, request_id: Optional[str] = None,
+    tier3_skip: Optional[List[str]] = None,
+) -> dict:
+    '''The full guardrails+generation core of /search-ask/chat, with no conversation
+    lookup or persistence - callable both from _generate_search_ask_chat_response below
+    (unchanged behavior) and from the Assistant orchestrator's dispatcher
+    (app/api/v1/assistant.py), so there's exactly one implementation of "how to answer a
+    general question" rather than two that can drift. Always returns {"question",
+    "answer", "blocked", "guardrail_events", "logs", "message"} - "question" is the
+    sanitized variant to persist. Re-runs check_input/check_quota internally even though
+    the Assistant dispatcher may have already run its own Tier-1 versions - defense in
+    depth: this function must stay correct when called directly too, never trusting an
+    external caller already checked.
+
+    tier3_skip is the Assistant orchestrator's per-turn judgment call, not an admin
+    setting - "bias_detection" is the only entry orchestrator.TIER3_ALLOWLIST permits
+    here, and it's ANDed with the existing admin config gate inside
+    bias_guardrail_fragments, never a replacement for it.'''
+    tier3_skip = tier3_skip or []
+
+    progress.update(request_id, "Guardrails: validating your question…")
+    input_check = guardrails_agent.check_input(question)
+    if not input_check["passed"]:
+        logger.warning("Search & Ask request blocked by input guardrail: %s", input_check["reason"])
+        return {
+            "question": question, "answer": msg("common.blocked_prefix", reason=input_check["reason"]), "blocked": True,
+            "guardrail_events": [input_check], "logs": [f"[guardrail:input_validation] BLOCKED - {input_check['reason']}"],
+            "message": "Request blocked by input validation",
+        }
+    question = input_check["sanitized_question"]
+
+    daily_usage = get_daily_usage(current_user["_id"], date.today().isoformat())
+    daily_quota = current_user.get("daily_token_quota")
+    if daily_quota is None:
+        daily_quota = guardrail_config.get_config()["daily_token_quota"]
+    progress.update(request_id, "Guardrails: checking your quota…")
+    quota_event = guardrails_agent.check_quota(daily_usage, daily_quota)
+    if not quota_event["passed"]:
+        logger.warning("Search & Ask request blocked by quota guardrail: %s", quota_event["reason"])
+        return {
+            "question": question, "answer": msg("common.blocked_prefix", reason=quota_event["reason"]), "blocked": True,
+            "guardrail_events": [input_check, quota_event], "logs": [f"[guardrail:quota_check] BLOCKED - {quota_event['reason']}"],
+            "message": "Request blocked by quota",
+        }
+
+    progress.update(request_id, "Search & Ask: drafting an answer…")
+    result = _generate_general_llm_call(question, history, model, tier3_skip)
+    increment_usage(current_user["_id"], date.today().isoformat(), result.get("token_count", 0))
+
+    events = result["guardrail_events"]
+    blocked_event = next((e for e in events if not e["passed"]), None)
+    if blocked_event:
+        answer_key = _BLOCKED_ANSWER_KEYS.get(blocked_event["stage"], "model_prompt_injection_check.blocked_answer")
+        answer = blocked_event.get("user_facing_message") or msg(answer_key)
+        logger.warning("Search & Ask request blocked by model guardrail (%s): %s", blocked_event["stage"], blocked_event["reason"])
+        return {
+            "question": question, "answer": answer, "blocked": True,
+            "guardrail_events": [input_check, quota_event] + events, "logs": result["logs"],
+            "message": "Request blocked by model guardrail",
+        }
+
+    progress.update(request_id, "Guardrails: checking the answer…")
+    output_event = guardrails_agent.check_output(result["answer"])
+    blocked = not output_event["passed"]
+    answer = output_event["sanitized_answer"] if output_event["passed"] else msg("output_validation.blocked_answer")
+
+    return {
+        "question": question, "answer": answer, "blocked": blocked,
+        "guardrail_events": [input_check, quota_event] + events + [output_event], "logs": result["logs"],
+        "message": "Chat completed successfully",
+    }
+
+
 def _generate_search_ask_chat_response(payload: SearchAskChatRequest, current_user: dict) -> dict:
     start = time.perf_counter()
     progress.start(payload.request_id)
@@ -197,60 +273,11 @@ def _generate_search_ask_chat_response(payload: SearchAskChatRequest, current_us
         else:
             conversation_id = create_conversation(current_user["_id"], PROJECT_ID)["_id"]
 
-        progress.update(payload.request_id, "Guardrails Agent: validating your question…")
-        input_check = guardrails_agent.check_input(payload.question)
-        if not input_check["passed"]:
-            logger.warning("Search & Ask request blocked by input guardrail: %s", input_check["reason"])
-            return _persist_and_respond(
-                conversation_id, current_user["_id"], payload.question,
-                msg("common.blocked_prefix", reason=input_check["reason"]), True, [input_check],
-                [f"[guardrail:input_validation] BLOCKED - {input_check['reason']}"], start,
-                "Request blocked by input validation",
-            )
-        question = input_check["sanitized_question"]
-
-        daily_usage = get_daily_usage(current_user["_id"], date.today().isoformat())
-        daily_quota = current_user.get("daily_token_quota")
-        if daily_quota is None:
-            daily_quota = guardrail_config.get_config()["daily_token_quota"]
-        progress.update(payload.request_id, "Guardrails Agent: checking your quota…")
-        quota_event = guardrails_agent.check_quota(daily_usage, daily_quota)
-        if not quota_event["passed"]:
-            logger.warning("Search & Ask request blocked by quota guardrail: %s", quota_event["reason"])
-            return _persist_and_respond(
-                conversation_id, current_user["_id"], question,
-                msg("common.blocked_prefix", reason=quota_event["reason"]), True, [input_check, quota_event],
-                [f"[guardrail:quota_check] BLOCKED - {quota_event['reason']}"], start,
-                "Request blocked by quota",
-            )
-
         history = get_conversation_history(conversation_id, config.CHAT_HISTORY_MAX_TURNS)
-
-        progress.update(payload.request_id, "Search & Ask: drafting an answer…")
-        result = _generate_search_ask_answer(question, history, payload.model)
-        increment_usage(current_user["_id"], date.today().isoformat(), result.get("token_count", 0))
-
-        events = result["guardrail_events"]
-        blocked_event = next((e for e in events if not e["passed"]), None)
-        if blocked_event:
-            answer_key = _BLOCKED_ANSWER_KEYS.get(blocked_event["stage"], "model_prompt_injection_check.blocked_answer")
-            answer = blocked_event.get("user_facing_message") or msg(answer_key)
-            logger.warning("Search & Ask request blocked by model guardrail (%s): %s", blocked_event["stage"], blocked_event["reason"])
-            return _persist_and_respond(
-                conversation_id, current_user["_id"], question, answer, True,
-                [input_check, quota_event] + events, result["logs"], start,
-                "Request blocked by model guardrail",
-            )
-
-        progress.update(payload.request_id, "Guardrails Agent: checking the answer…")
-        output_event = guardrails_agent.check_output(result["answer"])
-        blocked = not output_event["passed"]
-        answer = output_event["sanitized_answer"] if output_event["passed"] else msg("output_validation.blocked_answer")
-
+        result = generate_general_answer(payload.question, current_user, history, payload.model, payload.request_id)
         return _persist_and_respond(
-            conversation_id, current_user["_id"], question, answer, blocked,
-            [input_check, quota_event] + events + [output_event], result["logs"], start,
-            "Chat completed successfully",
+            conversation_id, current_user["_id"], result["question"], result["answer"], result["blocked"],
+            result["guardrail_events"], result["logs"], start, result["message"],
         )
     finally:
         progress.finish(payload.request_id)
