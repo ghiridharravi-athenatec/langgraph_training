@@ -22,8 +22,9 @@ pymupdf
 python-docx
 openpyxl
 tabulate
-paddleocr==3.7.0
-paddlepaddle
+# paddleocr/paddlepaddle deliberately excluded - moved out of this service (see
+# app/utils/ingest_files.py's optional `ocr` import) since they cost ~350MB RAM just
+# to load. Only add them back if this service itself needs to run image OCR again.
 presidio-analyzer
 cryptography
 pyjwt
@@ -36,5 +37,14 @@ pyodbc
 pytest
 pytest-asyncio
 mongomock
-# after install, download the spaCy NER model presidio-analyzer needs:
-#   python -m spacy download en_core_web_md
+# sentence-transformers/transformers/torch are only actually loaded into memory if
+# RERANKER_ENABLED=true (config.py) or EMBEDDING_PROVIDER=local - both lazy-imported,
+# so a memory-constrained deployment can leave them installed but unused (Oracle Free
+# Tier's 1GB instances, for example, should run with both left at their defaults:
+# RERANKER_ENABLED unset/false, EMBEDDING_PROVIDER=hf_api or gemini).
+#
+# after install, download the spaCy NER model presidio-analyzer needs (en_core_web_sm,
+# not md/lg - Presidio only reads doc.ents/token.lemma_, see guardrails.py's
+# _get_analyzer, so the smaller model's lower NER accuracy is an acceptable tradeoff
+# for ~40MB less RAM):
+#   python -m spacy download en_core_web_sm

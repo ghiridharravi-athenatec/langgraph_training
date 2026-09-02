@@ -54,6 +54,33 @@ REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "30"))
 # query and try again, same cost-capping principle as DB_AGENT_MAX_TOOL_CALLS below.
 RAG_MAX_RETRIEVAL_HOPS = int(os.getenv("RAG_MAX_RETRIEVAL_HOPS", "2"))
 
+# Off by default - local CrossEncoder reranking pulls in torch+transformers+
+# sentence_transformers (~400MB+ RAM) just to import, not worth it on a memory-
+# constrained deployment. When off, rerank_node keeps retrieve_node's hybrid-fusion
+# order instead (see app/utils/retrieve.py's rerank_node).
+RERANKER_ENABLED = os.getenv("RERANKER_ENABLED", "false").strip().lower() == "true"
+RERANKER_MODEL = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+
+# en_core_web_sm (~15MB) instead of _md (~54MB) - Presidio only reads doc.ents and
+# token.lemma_ (see guardrails.py's _get_analyzer), never word vectors, so the smaller
+# model's lower NER accuracy is the only real tradeoff for a meaningfully smaller
+# eager-loaded footprint (this loads at process startup via guardrails.warm_up()).
+SPACY_MODEL = os.getenv("SPACY_MODEL", "en_core_web_sm")
+
+# "local" runs BAAI/bge-m3 on this machine (default, no network dependency);
+# "hf_api" calls the same model through the free Hugging Face Inference API instead -
+# same model, same vector space, so existing stored embeddings stay compatible either
+# way. Set HF_TOKEN (huggingface_hub's standard env var) for higher free-tier limits.
+# "gemini" is a genuinely different model/vector space (1024 dims -> 3072) - switching
+# to or from it requires re-ingesting all documents and recreating the Atlas vector
+# index at EMBEDDING_DIMENSIONS below, unlike "local" <-> "hf_api" which share a model.
+EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "local").strip().lower()
+HF_EMBEDDING_MODEL = os.getenv("HF_EMBEDDING_MODEL", "BAAI/bge-m3")
+HF_TOKEN = os.getenv("HF_TOKEN", "")
+GEMINI_EMBEDDING_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
+GEMINI_EMBEDDING_DIMENSIONS = int(os.getenv("GEMINI_EMBEDDING_DIMENSIONS", "3072"))
+EMBEDDING_DIMENSIONS = GEMINI_EMBEDDING_DIMENSIONS if EMBEDDING_PROVIDER == "gemini" else 1024
+
 # --- Operational guardrails ---
 DAILY_TOKEN_QUOTA = int(os.getenv("DAILY_TOKEN_QUOTA", "50000"))
 CHAT_RATE_LIMIT = int(os.getenv("CHAT_RATE_LIMIT", "20"))

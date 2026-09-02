@@ -261,17 +261,17 @@ def test_chat_dispatches_both_sources_and_synthesizes(client, admin_headers, adm
 
     async def _fake_document_answer(state, current_user, history):
         calls.append("document")
-        return {"message": "Chat completed successfully", "answer": "doc says X", "blocked": False, "guardrail_events": [], "logs": []}
+        return {"message": "Chat completed successfully", "answer": "warranty is 12 months", "blocked": False, "guardrail_events": [], "logs": []}
 
     def _fake_database_answer(question, connection, current_user, model, history, request_id, show_tier1_progress=True):
         calls.append("database")
-        return {"message": "Chat completed successfully", "answer": "db says Y", "blocked": False, "guardrail_events": [], "logs": []}
+        return {"message": "Chat completed successfully", "answer": "stock is 50 units", "blocked": False, "guardrail_events": [], "logs": []}
 
     def _fake_generate_json_dispatch(prompt, max_tokens, stage, model=None):
         if stage == "orchestrator_routing":
             return LLMResult(text='{"route": "both", "reasoning": "needs both"}', token_count=10, provider="claude", safety_event=_safety_event(stage), log="fake")
         if stage == "answer_synthesis":
-            return LLMResult(text='{"answer": "Combined: doc says X and db says Y"}', token_count=20, provider="claude", safety_event=_safety_event(stage), log="fake")
+            return LLMResult(text='{"answer": "Combined: warranty is 12 months and stock is 50 units"}', token_count=20, provider="claude", safety_event=_safety_event(stage), log="fake")
         raise AssertionError(f"unexpected stage {stage!r}")
 
     monkeypatch.setattr("app.api.v1.api.generate_document_answer", _fake_document_answer)
@@ -282,7 +282,7 @@ def test_chat_dispatches_both_sources_and_synthesizes(client, admin_headers, adm
     assert resp.status_code == 200
     body = parse_sse_response(resp)
     assert set(calls) == {"document", "database"}
-    assert body["answer"] == "Combined: doc says X and db says Y"
+    assert body["answer"] == "Combined: warranty is 12 months and stock is 50 units"
     assert body["routed_to"] == "both"
     routing_event = next(e for e in body["guardrail_events"] if e["stage"] == "orchestrator_routing")
     assert routing_event["route"] == "both"
