@@ -41,7 +41,7 @@ const SETUP_INGEST_FLOW = [
   },
   {
     title: "Extract & chunk",
-    desc: "Per-format extraction (PDF text/tables/OCR'd images, XLSX sheets, DOCX paragraphs/tables, plain text), split into ~700-character overlapping chunks",
+    desc: "Per-format extraction (PDF text/tables/images, XLSX sheets, DOCX paragraphs/tables, plain text), split into ~700-character overlapping chunks",
   },
   {
     title: "PII masking",
@@ -50,7 +50,7 @@ const SETUP_INGEST_FLOW = [
   },
   {
     title: "Embed & store",
-    desc: "Chunks embedded (BGE-M3) and stored, scoped to this uploader only - nobody else's retrieval will ever see them",
+    desc: "Chunks embedded (using the configured embedding model) and stored, scoped to this uploader only - nobody else's retrieval will ever see them",
   },
 ];
 
@@ -145,7 +145,7 @@ const PIPELINE_DOC_BRANCH = [
   },
   {
     title: "Rerank",
-    desc: "A cross-encoder re-scores the surviving chunks against the question and keeps the top 5 - a second, more precise pass than the hybrid search's initial ranking",
+    desc: "Keeps the top 5 highest-ranked chunks from the hybrid search's fused ranking, narrowing what moves on to the context budget step",
     owner: "document",
   },
   {
