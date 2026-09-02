@@ -59,7 +59,11 @@
       "Bash(powershell -NoProfile -Command \"Get-CimInstance Win32_Process -Filter 'ProcessId=26128' | Select-Object ProcessId,Name,CommandLine,ExecutablePath | Format-List\" 2>&1)",
       "WebFetch(domain:rbac-1-two.vercel.app)",
       "Bash(pkill -f \"vite --port 5173\")",
-      "Bash(taskkill *)"
+      "Bash(taskkill *)",
+      "Bash(\".venv/Scripts/python.exe\" -m py_compile app/core/embeddings.py app/core/config.py app/utils/retrieve.py app/utils/ingest_files.py)",
+      "Bash(\".venv/Scripts/python.exe\" -m pytest tests/test_semantic_cache.py tests/test_guardrails_extra.py tests/test_multi_hop_retrieval.py -q)",
+      "Bash(EMBEDDING_PROVIDER=hf_api .venv/Scripts/python.exe -c ' *)",
+      "Bash(\".venv/Scripts/python.exe\" -m py_compile app/core/embeddings.py app/core/config.py)"
     ]
   }
 }

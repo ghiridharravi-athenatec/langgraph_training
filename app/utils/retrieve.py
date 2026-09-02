@@ -3,15 +3,13 @@ from langgraph.graph import StateGraph, START, END
 from langchain_ollama import ChatOllama
 from langchain_mongodb import MongoDBAtlasVectorSearch
 from pymongo import MongoClient
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from sentence_transformers import CrossEncoder
 import os, operator, re
-import torch
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
 from dotenv import load_dotenv
 
 from app.core import config, guardrail_config, guardrails, llm_provider, progress
+from app.core.embeddings import get_embedding_model
 from app.core.logger import get_logger
 from app.core.guardrails import timed_node
 from app.core.guardrails_agent import guardrails_agent
@@ -20,7 +18,6 @@ from app.core.messages import msg
 load_dotenv()
 logger = get_logger(__name__)
 
-device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 DB_NAME = "rag_database"
 DOCUMENT_CHUNKS_COLLECTION = "document_chunks"  # single collection - general-purpose ingestion, no document-category split
 
@@ -30,13 +27,21 @@ DOCUMENT_CHUNKS_COLLECTION = "document_chunks"  # single collection - general-pu
 # so the two can never drift apart.
 NO_ANSWER_IN_CONTEXT_TEXT = "I don't know based on the provided context."
 
-embedding_model = HuggingFaceEmbeddings(
-    model_name="BAAI/bge-m3",
-    model_kwargs={"device": device},
-    encode_kwargs={"normalize_embeddings": True},
-)
+embedding_model = get_embedding_model()
 
-reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", device=device)
+# Local CrossEncoder reranking pulls in torch+transformers+sentence_transformers
+# (~400MB+ RAM) just to import - not worth it on a memory-constrained deployment, so
+# it's opt-in (config.RERANKER_ENABLED) and lazily imported only if actually enabled.
+_reranker = None
+
+
+def _get_reranker():
+    global _reranker
+    if _reranker is None:
+        from sentence_transformers import CrossEncoder
+        _reranker = CrossEncoder(config.RERANKER_MODEL, device="cpu")
+    return _reranker
+
 
 llm = ChatOllama(
     model="qwen2.5:7b",
@@ -545,12 +550,21 @@ def rerank_node(state: RAGState):
     query = state["question"]
     chunks = state["retrieved_chunks"]
 
+    if not config.RERANKER_ENABLED:
+        # retrieve_node's chunks are already hybrid-fusion ranked (best first) - without
+        # a local reranker, that ordering is the best available signal, just narrowed.
+        top_chunks = chunks[:5]
+        return {
+            "reranked_chunks": top_chunks,
+            "logs": [f"Reranking disabled - kept top {len(top_chunks)} of {len(chunks)} by hybrid fusion rank"],
+        }
+
     pairs = [
         [query, chunk["content"]]
         for chunk in chunks
     ]
 
-    scores = reranker.predict(pairs)
+    scores = _get_reranker().predict(pairs)
 
     reranked = []
 

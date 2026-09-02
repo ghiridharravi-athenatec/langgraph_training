@@ -865,7 +865,7 @@ def create_vector_search_index(collection_name: str, db_name: str = "rag_databas
     # query can filter on it.
     definition = {
         "fields": [
-            {"type": "vector", "path": "embedding", "numDimensions": 1024, "similarity": "cosine"},
+            {"type": "vector", "path": "embedding", "numDimensions": config.EMBEDDING_DIMENSIONS, "similarity": "cosine"},
             {"type": "filter", "path": "source"},
             {"type": "filter", "path": "user_id"},
         ]

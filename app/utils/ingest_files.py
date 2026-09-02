@@ -7,35 +7,39 @@ from docx import Document as DocxDocument
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_mongodb import MongoDBAtlasVectorSearch
-from langchain_community.embeddings import HuggingFaceEmbeddings
-import torch
+from app.core.embeddings import get_embedding_model
 from app.utils.mongo import DOCUMENT_CHUNKS_COLLECTION, get_mongo_client, create_vector_search_index
 from app.utils.table_chunking import chunk_table_rows
 import io
 from PIL import Image
-from paddleocr import PaddleOCR
 from app.core.ingest_guardrails import scan_ingested_pii
 from app.core.logger import get_logger
 
 logger = get_logger(__name__)
 
-ocr = PaddleOCR(
-    use_doc_orientation_classify=False,
-    use_doc_unwarping=False,
-    use_textline_orientation=False,
-    lang="en",
-    # oneDNN's PIR executor path crashes on this CPU with
-    # "ConvertPirAttribute2RuntimeAttribute not support [pir::ArrayAttribute<pir::DoubleAttribute>]"
-    # on every image; the plain (non-mkldnn) run mode avoids that op path.
-    enable_mkldnn=False,
-)
+# paddleocr/paddlepaddle cost ~350MB RAM just to load - deliberately moved out of this
+# service (not in requirements.txt) on memory-constrained deployments. When absent,
+# extract_images() below still saves each embedded image and keeps the page's own
+# text, it just skips the OCR text for images-only content (e.g. a scanned page with
+# no text layer).
+try:
+    from paddleocr import PaddleOCR
 
-device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
-embedding_model = HuggingFaceEmbeddings(
-    model_name="BAAI/bge-m3",
-    model_kwargs={"device": device},
-    encode_kwargs={"normalize_embeddings": True},
-)
+    ocr = PaddleOCR(
+        use_doc_orientation_classify=False,
+        use_doc_unwarping=False,
+        use_textline_orientation=False,
+        lang="en",
+        # oneDNN's PIR executor path crashes on this CPU with
+        # "ConvertPirAttribute2RuntimeAttribute not support [pir::ArrayAttribute<pir::DoubleAttribute>]"
+        # on every image; the plain (non-mkldnn) run mode avoids that op path.
+        enable_mkldnn=False,
+    )
+except ImportError:
+    logger.warning("paddleocr not installed - image OCR extraction disabled, embedded images will be saved without OCR text")
+    ocr = None
+
+embedding_model = get_embedding_model()
 
 def extract_images(pdf: fitz.Document, pdf_path: str):
 
@@ -82,7 +86,7 @@ def extract_images(pdf: fitz.Document, pdf_path: str):
 
             try:
 
-                result = ocr.predict(image_path)
+                result = ocr.predict(image_path) if ocr is not None else None
 
                 if result:
 
